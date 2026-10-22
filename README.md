@@ -57,14 +57,20 @@ print(result.text, result.metrics)
 
 ## OpenAI / OpenAI 互換 API で動かす
 
-モデルは `runtime.toml` の `default_id`（環境変数 `RUNTIME_DEFAULT_MODEL` で上書き可）か、各 `agent.toml` の `[model] id` で選びます。
+モデルは各 `agent.toml` の `[model] id` で選びます（`[model]` を省いたエージェントは `runtime.toml` の `default_id`）。
+
+```toml
+# agents/assistant/agent.toml
+[model]
+id = "openai-chat/gpt-4.1-mini"                 # キーは環境変数 OPENAI_API_KEY（TOML には書かない）
+# OpenAI 互換サーバーなら:
+# id = "openai-chat/<server が返すモデル名>"
+# base_url = "http://localhost:11434/v1"
+# api_key_env = "LOCAL_LLM_API_KEY"
+```
 
 ```bash
-export OPENAI_API_KEY=...                      # キーは環境変数で渡す（TOML には書かない）
-export RUNTIME_DEFAULT_MODEL=openai-chat/gpt-4.1-mini
-# OpenAI 互換サーバーなら加えて:
-# export OPENAI_BASE_URL=http://localhost:11434/v1
-uv run --extra openai strands-runtime run assistant "今日は何日？"
+uv run --env-file .env strands-runtime run assistant "今日は何日？"
 ```
 
 | id の形式 | 使う API | 用途 |
@@ -130,8 +136,7 @@ AgentCore Runtime へは同じイメージを ECR に置いてデプロイしま
 
 | 変数 | 用途 |
 |---|---|
-| `STRANDS_RUNTIME_CONFIG` | `runtime.toml` のパス（既定 `./runtime.toml`） |
-| `STRANDS_RUNTIME_ENABLED_AGENTS` | 公開エージェントをカンマ区切りで上書き（同じイメージから複数 Runtime を作るとき） |
+| `STRANDS_RUNTIME_CONFIG` | 読む `runtime.toml`（既定 `./runtime.toml`）。デプロイごとの差分は `runtime.toml` を分けて、この変数で選ぶ |
 
 サーバーのログは標準エラー出力に加え、`runtime.toml` の `[server] log_file` を設定するとファイルにも書かれます（Python の警告も含む）。
 | `OPENROUTER_API_KEY` など | `[model] api_key_env` で名指しした変数 |

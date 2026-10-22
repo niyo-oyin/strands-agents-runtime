@@ -65,28 +65,20 @@ def _describe(error: ValidationError) -> str:
     return "; ".join(lines)
 
 
-ENABLED_AGENTS_ENV_VAR = "STRANDS_RUNTIME_ENABLED_AGENTS"
-"""Comma-separated agent names; overrides ``[runtime] enabled_agents`` so one image can back several deployments."""
-
-
 def load_runtime_config(path: Path) -> RuntimeConfig:
-    """Load and validate ``runtime.toml`` (a missing file yields the defaults), then apply env overrides."""
-    if path.exists():
-        data = _read_toml(path)
-        try:
-            config = RuntimeConfig.model_validate(data)
-        except ValidationError as exc:
-            raise DefinitionError(_describe(exc), source=str(path)) from exc
-    else:
-        config = RuntimeConfig()
+    """Load and validate ``runtime.toml``. A missing file yields the defaults.
 
-    override = os.environ.get(ENABLED_AGENTS_ENV_VAR)
-    if override is not None:
-        names = [name.strip() for name in override.split(",") if name.strip()]
-        if not names:
-            raise DefinitionError(f"{ENABLED_AGENTS_ENV_VAR} is set but names no agents")
-        config = config.model_copy(update={"runtime": config.runtime.model_copy(update={"enabled_agents": names})})
-    return config
+    Deployment-specific differences (published agents, session backend, default model) live in separate
+    ``runtime.toml`` files selected with ``STRANDS_RUNTIME_CONFIG``; nothing in here is overridden from the
+    environment except through ``${VAR}`` references written in the file itself.
+    """
+    if not path.exists():
+        return RuntimeConfig()
+    data = _read_toml(path)
+    try:
+        return RuntimeConfig.model_validate(data)
+    except ValidationError as exc:
+        raise DefinitionError(_describe(exc), source=str(path)) from exc
 
 
 def is_path_reference(value: str) -> bool:

@@ -3,8 +3,9 @@ agents_dir = "./agents"
 default_agent = "assistant"
 
 [model]
-# 例: RUNTIME_DEFAULT_MODEL=openai-chat/gpt-4.1-mini（OpenAI 互換 Chat Completions）
-default_id = "${RUNTIME_DEFAULT_MODEL:-bedrock/global.anthropic.claude-opus-5}"
+# [model] を持たないエージェントが使う既定。環境ごとに変えるなら runtime.toml を分けて
+# STRANDS_RUNTIME_CONFIG で選ぶ（環境変数で構成を差し替えない）。
+default_id = "bedrock/global.anthropic.claude-opus-5"
 
 [session]
 backend = "local"
