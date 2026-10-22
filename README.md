@@ -105,11 +105,21 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml ru
 
 ## Docker
 
+同じイメージをローカルと Amazon Bedrock AgentCore Runtime で使います（linux/arm64、コンテナ内は `0.0.0.0:8080`）。
+
 ```bash
-docker buildx build --platform linux/arm64 -t strands-runtime .
-docker run --rm -p 8080:8080 -e AWS_REGION=us-west-2 \
-  -v ~/.aws:/home/runtime/.aws:ro strands-runtime
+docker buildx build --platform linux/arm64 -t strands-runtime --load .
+# エージェントが使うモデルプロバイダーの extras はビルド引数で指定（既定: agentcore-otel openai）
+# docker buildx build --platform linux/arm64 --build-arg EXTRAS="agentcore-otel openai anthropic" -t strands-runtime --load .
+
+# ローカル実行: キーは .env から渡し、OTel コレクターがないので SDK を無効化する
+docker run --rm -p 8080:8080 --env-file .env -e OTEL_SDK_DISABLED=true strands-runtime
+curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' -d '{"prompt":"こんにちは","stream":false}'
 ```
+
+- 起動コマンドは `opentelemetry-instrument strands-runtime serve --port 8080`。AgentCore 上では Runtime が注入する ADOT の環境変数でトレースが CloudWatch に送られるため、`OTEL_SDK_DISABLED` は付けません。
+- `runtime.toml` の `[server] port` はコマンドラインの `--port 8080` で上書きされます。`log_file` はコンテナ内の `/app/.runtime/server.log` です。
+- Bedrock を使う場合は `-e AWS_REGION=... -v ~/.aws:/home/runtime/.aws:ro` などで資格情報を渡します。
 
 AgentCore Runtime へは同じイメージを ECR に置いてデプロイします（CDK スタックはフェーズ 2 で追加予定）。
 

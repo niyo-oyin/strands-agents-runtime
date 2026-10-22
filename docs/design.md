@@ -581,8 +581,11 @@ curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
 - ベースイメージ `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`、`linux/arm64` でビルドする（AgentCore の要件に合わせ、ローカルも ARM64 Mac で同じイメージを使う）。
 - `uv sync --frozen --no-dev` で依存を固定し、非 root ユーザーで実行する。
 - `ENV DOCKER_CONTAINER=1` を置き、`app.run()` が `0.0.0.0` に束縛するようにする。
-- `CMD ["opentelemetry-instrument", "python", "-m", "strands_runtime.server"]`。
-- `agents/` と `runtime.toml` をイメージに含める。環境差分は環境変数で与える。
+- `CMD ["opentelemetry-instrument", "strands-runtime", "serve", "--port", "8080"]`。`--port` が `runtime.toml` の値より優先されるため、開発用に別ポートを書いていてもコンテナ内は AgentCore 契約の 8080 で待ち受ける。
+- モデルプロバイダーの extras はビルド引数 `EXTRAS`（既定 `agentcore-otel openai`）で選ぶ。
+- `agents/` と `runtime.toml` をイメージに含める。環境差分は環境変数で与える（ローカル実行は `--env-file .env`）。
+- ローカルでコンテナを動かすときは OTel コレクターがないため `OTEL_SDK_DISABLED=true` を渡す。イメージには焼き込まない（AgentCore 上では Runtime が注入する ADOT 設定を生かす）。
+- 確認済み（2026-10-22）: Apple Silicon 上で linux/arm64 イメージをビルドし、OpenRouter の実モデルでツール呼び出し・セッション継続・非ストリーミング応答が動作。イメージは約 945 MB。
 
 ### 11.3 AgentCore Runtime
 

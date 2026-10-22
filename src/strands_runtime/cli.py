@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -174,7 +175,9 @@ def _serve(runtime: Runtime, args: argparse.Namespace) -> int:
     from strands_runtime.server import create_app, run_app
 
     port = args.port or runtime.config.server.port
-    host = args.host or runtime.config.server.host or "127.0.0.1"
+    # Mirror BedrockAgentCoreApp.run's host detection so the banner shows the real bind address.
+    in_container = Path("/.dockerenv").exists() or bool(os.environ.get("DOCKER_CONTAINER"))
+    host = args.host or runtime.config.server.host or ("0.0.0.0" if in_container else "127.0.0.1")
     print(f"strands-runtime: serving {', '.join(runtime.registry.published)} at http://{host}:{port}", flush=True)
     print("  POST /invocations  GET /ping   (Ctrl-C to stop)", flush=True)
     run_app(create_app(runtime), runtime, port=port, host=args.host, verbose=args.verbose)

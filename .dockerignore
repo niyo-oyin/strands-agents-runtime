@@ -1,0 +1,14 @@
+.git
+.venv
+.env
+.runtime
+.sessions
+.mypy_cache
+.ruff_cache
+.pytest_cache
+__pycache__
+tests
+tests_integ
+examples
+docs
+.DS_Store
