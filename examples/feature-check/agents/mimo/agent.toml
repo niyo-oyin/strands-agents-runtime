@@ -1,0 +1,7 @@
+name = "mimo"
+description = "xiaomi/mimo-v2.6-pro での動作確認用"
+
+[model]
+id = "openai-chat/xiaomi/mimo-v2.6-pro"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

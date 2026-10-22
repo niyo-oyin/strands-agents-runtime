@@ -136,3 +136,20 @@ def test_top_level_keys_after_model_table_are_rejected_with_hint(tmp_path: Path)
     )
     with pytest.raises(DefinitionError, match="before the first table header"):
         load_agent(directory)
+
+
+def test_nested_path_references_are_absolutized(tmp_path: Path) -> None:
+    directory = write_agent(
+        tmp_path / "agents",
+        "alpha",
+        toml_extra='[structured_output]\nmodel = "./schemas.py:Answer"\n',
+        model_table='[model]\nmodule = "./fake_model.py:make_model"\n',
+    )
+    (directory / "schemas.py").write_text("", "utf-8")
+    (directory / "fake_model.py").write_text("", "utf-8")
+
+    resolved = load_agent(directory)
+
+    assert resolved.definition.structured_output is not None
+    assert resolved.definition.structured_output.model == f"{directory / 'schemas.py'}:Answer"
+    assert resolved.definition.model.module == f"{directory / 'fake_model.py'}:make_model"

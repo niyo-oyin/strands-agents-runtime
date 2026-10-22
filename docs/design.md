@@ -292,6 +292,7 @@ dir = "./.runtime/sessions"              # local のとき
 
 [server]
 port = 8080
+log_file = "./.runtime/server.log"       # 任意: 端末に加えてファイルにも出す（警告も含む）
 
 [telemetry]
 # Strands/ADOT は標準の OTEL_* 環境変数で制御する。ここには設定を置かない。
@@ -526,6 +527,8 @@ Strands が提供する他の方式に対しては、定義フォーマットに
   ただし、グローバルな TracerProvider が既に設定されている場合（`opentelemetry-instrument` 配下で起動した場合）は、環境変数の有無にかかわらず何もしない。AgentCore 上では ADOT が `OTEL_TRACES_EXPORTER=otlp` を注入するため、このガードがないとエクスポーターが二重になる。
 - `Agent(trace_attributes=...)` に `session.id`、`user.id`、`agent.name` を付与する。AgentCore のセッションヘッダーは ADOT が自動で `session.id` に紐づける。
 - 構造化ログは標準 `logging` で出し、JSON フォーマッタは導入しない（ADOT のログ連携と CloudWatch で十分）。
+- `serve` はランタイム・Strands・uvicorn・Python の警告をすべてルートロガーに集約し、`[server] log_file` が設定されていれば同じ内容をファイルにも書く。端末を見られない作業者（別の運用者、エージェント、CI）がサーバーの観測結果を読めるようにするためのもの。
+- OpenAI 互換モデルは SDK がコンテキスト長を知らないため、`[model.config] context_window_limit` を定義側で指定する（未指定なら SDK が 200,000 と仮定して警告する）。
 
 ---
 

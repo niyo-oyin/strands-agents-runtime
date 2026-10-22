@@ -1,0 +1,8 @@
+name = "coordinator"
+description = "依頼を受け、要約は summarizer に委譲する調整役"
+subagents = ["summarizer"]
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

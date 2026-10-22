@@ -1,0 +1,12 @@
+name = "mcp-user"
+description = "MCP サーバーのツールを使う動作確認用"
+
+[mcp_servers.demo]
+command = "uv"
+args = ["run", "python", "mcp_server.py"]
+cwd = "."
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

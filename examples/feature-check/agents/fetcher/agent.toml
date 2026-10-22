@@ -1,0 +1,8 @@
+name = "fetcher"
+description = "SDK 同梱の http_request ツールの動作確認用"
+tools = ["strands.vended_tools:http_request"]
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

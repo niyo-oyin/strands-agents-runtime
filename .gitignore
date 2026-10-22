@@ -9,3 +9,5 @@ dist/
 .strands/
 *.egg-info/
 .DS_Store
+.env
+.sessions/

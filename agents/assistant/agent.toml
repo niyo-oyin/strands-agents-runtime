@@ -8,5 +8,9 @@ id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
+[model.config]
+# OpenAI 互換モデルはコンテキスト長を SDK が知らないため、文脈管理の見積もりに使う値を明示する。
+context_window_limit = 128000
+
 [limits]
 turns = 20

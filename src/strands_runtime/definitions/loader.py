@@ -97,7 +97,9 @@ def _resolve_path_reference(value: str, base_dir: Path) -> str:
 class ResolvedAgent:
     """An :class:`AgentDefinition` plus everything the factory needs from the filesystem.
 
-    All paths are absolute. ``mcp_servers`` is always a mapping (``mcp.json`` has been read).
+    All paths are absolute: the list fields below replace the definition's relative tool/skill/plugin
+    references, and path references nested in ``definition`` (``model.module``, ``structured_output.model``)
+    have been absolutized in place. ``mcp_servers`` is always a mapping (``mcp.json`` has been read).
     """
 
     definition: AgentDefinition
@@ -160,6 +162,17 @@ def load_agent(directory: Path) -> ResolvedAgent:
         for i in definition.interventions
     ]
     plugins = [_resolve_path_reference(p, directory) if is_path_reference(p) else p for p in definition.plugins]
+
+    # Code references nested inside the definition (model.module, structured_output.model) are resolved in place.
+    updates: dict[str, Any] = {}
+    if definition.model.module and is_path_reference(definition.model.module):
+        module = _resolve_path_reference(definition.model.module, directory)
+        updates["model"] = definition.model.model_copy(update={"module": module})
+    if definition.structured_output and is_path_reference(definition.structured_output.model):
+        model_ref = _resolve_path_reference(definition.structured_output.model, directory)
+        updates["structured_output"] = definition.structured_output.model_copy(update={"model": model_ref})
+    if updates:
+        definition = definition.model_copy(update=updates)
 
     return ResolvedAgent(
         definition=definition,

@@ -12,3 +12,4 @@ dir = "./.runtime/sessions"
 
 [server]
 port = 18080
+log_file = "./.runtime/server.log"   # 端末に加えてファイルにも出す

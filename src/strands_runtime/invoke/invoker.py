@@ -86,11 +86,16 @@ class Invoker:
             yield ErrorEvent(error_type="NoResult", message="the agent stopped without producing a result")
 
     async def invoke(self, request: InvocationRequest, *, session_id: str | None = None) -> ResultEvent | ErrorEvent:
-        """Run to completion and return the final ``result`` (or the first ``error``)."""
+        """Run to completion and return the final ``result`` (or the first ``error``).
+
+        The stream is always consumed to its end: breaking out early leaves the agent's async generator
+        to be closed by garbage collection from another context, which breaks the SDK's span bookkeeping.
+        """
+        final: ResultEvent | ErrorEvent | None = None
         async for event in self.stream(request, session_id=session_id):
-            if isinstance(event, ResultEvent | ErrorEvent):
-                return event
-        return ErrorEvent(error_type="NoResult", message="the agent produced no result")
+            if final is None and isinstance(event, ResultEvent | ErrorEvent):
+                final = event
+        return final if final is not None else ErrorEvent(error_type="NoResult", message="the agent produced no result")
 
 
 def agent_limits(factory: AgentFactory, name: str) -> Any:

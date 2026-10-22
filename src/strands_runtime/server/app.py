@@ -19,6 +19,7 @@ from starlette.responses import JSONResponse
 from strands_runtime.errors import UnknownAgentError
 from strands_runtime.events import ErrorEvent
 from strands_runtime.invoke import InvocationRequest
+from strands_runtime.logging_setup import configure_logging
 from strands_runtime.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -61,9 +62,35 @@ async def _sse(runtime: Runtime, request: InvocationRequest, session_id: str | N
         yield event.model_dump(mode="json")
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    runtime = Runtime.load()
-    app = create_app(runtime)
+def run_app(
+    app: BedrockAgentCoreApp,
+    runtime: Runtime,
+    *,
+    port: int | None = None,
+    host: str | None = None,
+    verbose: bool = False,
+) -> None:
+    """Configure logging (stderr + optional ``[server] log_file``) and serve until interrupted.
+
+    ``log_config=None`` stops uvicorn from installing its own handlers so its records reach the same
+    root logger, and therefore the same file, as everything else.
+    """
+    log_file = runtime.config.server.log_file
+    configure_logging(
+        logging.DEBUG if verbose else logging.INFO,
+        log_file=(runtime.base_dir / log_file).resolve() if log_file else None,
+    )
     logger.info("serving agents: %s", ", ".join(runtime.registry.published))
-    app.run(port=runtime.config.server.port, host=runtime.config.server.host)
+    if log_file:
+        logger.info("log file: %s", (runtime.base_dir / log_file).resolve())
+    app.run(
+        port=port or runtime.config.server.port,
+        host=host or runtime.config.server.host,
+        log_config=None,
+        log_level="debug" if verbose else "info",
+    )
+
+
+def main() -> None:
+    runtime = Runtime.load()
+    run_app(create_app(runtime), runtime)

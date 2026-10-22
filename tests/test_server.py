@@ -76,3 +76,20 @@ def test_sse_frames_are_json_per_line(client: TestClient) -> None:
     for frame in frames:
         json.loads(frame[len("data: ") :])
     assert frames
+
+
+def test_log_file_receives_server_logs_and_warnings(tmp_path) -> None:
+    import logging
+    import warnings
+
+    from strands_runtime.logging_setup import configure_logging
+
+    log_file = tmp_path / "logs" / "server.log"
+    configure_logging(logging.INFO, log_file=log_file)
+    try:
+        logging.getLogger("strands_runtime.test").info("hello from the server")
+        warnings.warn("context_window_limit is not set", UserWarning, stacklevel=1)
+    finally:
+        configure_logging(logging.WARNING)
+    text = log_file.read_text(encoding="utf-8")
+    assert "hello from the server" in text and "context_window_limit is not set" in text

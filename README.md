@@ -72,6 +72,8 @@ uv run --extra openai strands-runtime run assistant "今日は何日？"
 | `openai/<model>` | OpenAI Responses API（strands-harness 経由、effort 変換あり） | OpenAI 本家 |
 | `openai-chat/<model>` | Chat Completions（`strands.models.OpenAIModel`） | OpenAI 互換サーバー全般。`[model] base_url` で接続先、`api_key_env` でキーの環境変数名を指定可 |
 
+OpenAI 互換モデルはコンテキスト長を SDK が知らないため、`[model.config] context_window_limit` にモデルの値を書いてください（未指定だと SDK が 200,000 と仮定し、呼び出しごとに警告を出します）。
+
 公式と互換サーバーを同時に使うときは、エージェントごとに接続先とキーの環境変数を分けます。
 
 ```toml
@@ -80,6 +82,17 @@ uv run --extra openai strands-runtime run assistant "今日は何日？"
 id = "openai-chat/meta-llama/Llama-3.1-8B-Instruct"
 base_url = "http://localhost:8000/v1"
 api_key_env = "LOCAL_LLM_API_KEY"      # 値ではなく変数名。OPENAI_API_KEY は公式側に残せる
+```
+
+## 機能確認用の定義（examples/feature-check）
+
+サブエージェント、Agent Skills、MCP、構造化出力、`limits`、`invocation_state`、SDK 同梱ツール、別モデルを 1 つずつ試せる定義を置いています。
+キーは gitignore 済みの `.env` に置き、`uv run --env-file` で子プロセスにだけ渡します。
+
+```bash
+echo 'OPENROUTER_API_KEY=...' > .env
+uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml list
+uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run skilled "俳句スタイルで秋について" --json
 ```
 
 ## Docker
@@ -97,6 +110,8 @@ AgentCore Runtime へは同じイメージを ECR に置いてデプロイしま
 | 変数 | 用途 |
 |---|---|
 | `STRANDS_RUNTIME_CONFIG` | `runtime.toml` のパス（既定 `./runtime.toml`） |
+
+サーバーのログは標準エラー出力に加え、`runtime.toml` の `[server] log_file` を設定するとファイルにも書かれます（Python の警告も含む）。
 | `OTEL_TRACES_EXPORTER` | `otlp` / `console`。未設定ならトレースを送らない。`opentelemetry-instrument` 配下では無視 |
 | `AWS_REGION` ほか | Bedrock / S3 / AgentCore Memory の資格情報とリージョン |
 

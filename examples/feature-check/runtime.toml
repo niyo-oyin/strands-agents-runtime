@@ -1,0 +1,13 @@
+# 機能確認用のランタイム設定。実行例:
+#   uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run <agent> "<prompt>"
+[runtime]
+agents_dir = "./agents"
+default_agent = "coordinator"
+
+[session]
+backend = "local"
+dir = "./.sessions"
+
+[server]
+port = 18081
+log_file = "./.runtime/server.log"

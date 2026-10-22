@@ -1,0 +1,8 @@
+name = "tenant-aware"
+description = "invocation_state をツールが読む動作確認用"
+tools = ["./tools/whoami.py"]
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

@@ -14,6 +14,7 @@ from strands_runtime.errors import StrandsRuntimeError
 from strands_runtime.events import ErrorEvent, ResultEvent, TextEvent
 from strands_runtime.factory.references import load_attribute
 from strands_runtime.invoke import InvocationRequest
+from strands_runtime.logging_setup import configure_logging
 from strands_runtime.runtime import Runtime
 
 
@@ -41,9 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
-    )
+    configure_logging(logging.DEBUG if args.verbose else logging.WARNING)
     try:
         runtime = Runtime.load(args.config)
         match args.command:
@@ -128,14 +127,13 @@ async def _run(runtime: Runtime, args: argparse.Namespace) -> int:
 
 
 def _serve(runtime: Runtime, args: argparse.Namespace) -> int:
-    from strands_runtime.server import create_app
+    from strands_runtime.server import create_app, run_app
 
-    app = create_app(runtime)
     port = args.port or runtime.config.server.port
     host = args.host or runtime.config.server.host or "127.0.0.1"
     print(f"strands-runtime: serving {', '.join(runtime.registry.published)} at http://{host}:{port}", flush=True)
     print("  POST /invocations  GET /ping   (Ctrl-C to stop)", flush=True)
-    app.run(port=port, host=args.host or runtime.config.server.host)
+    run_app(create_app(runtime), runtime, port=port, host=args.host, verbose=args.verbose)
     return 0
 
 

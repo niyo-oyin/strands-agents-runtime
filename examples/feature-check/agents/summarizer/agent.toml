@@ -1,0 +1,7 @@
+name = "summarizer"
+description = "渡された文章を 1 文の日本語に要約する。入力には要約したい文章をそのまま渡す。"
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

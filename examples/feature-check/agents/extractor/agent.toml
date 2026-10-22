@@ -1,0 +1,10 @@
+name = "extractor"
+description = "文章から連絡先を構造化して抽出する"
+
+[structured_output]
+model = "./schemas.py:ContactCard"
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

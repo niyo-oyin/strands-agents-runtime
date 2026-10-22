@@ -174,6 +174,8 @@ class ServerSection(_Strict):
     host: NonBlankStr | None = None
     """``None`` lets ``BedrockAgentCoreApp.run`` choose (0.0.0.0 inside a container, else 127.0.0.1)."""
     port: int = Field(default=8080, ge=1, le=65535)
+    log_file: NonBlankStr | None = None
+    """Also write the process log (runtime, Strands, uvicorn, warnings) to this file, relative to runtime.toml."""
 
 
 class RuntimeConfig(_Strict):
