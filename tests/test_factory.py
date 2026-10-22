@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from strands.session import SnapshotSessionManager
 
-from strands_runtime.errors import ReferenceResolutionError, UnknownAgentError
+from strands_runtime.errors import DefinitionError, ReferenceResolutionError, UnknownAgentError
 from strands_runtime.factory import SessionContext
 from strands_runtime.runtime import Runtime
 from tests.conftest import write_agent, write_runtime
@@ -59,3 +59,61 @@ def test_bad_reference_is_reported(tmp_path: Path) -> None:
 def test_unknown_agent(runtime: Runtime) -> None:
     with pytest.raises(UnknownAgentError):
         runtime.factory.build("nope", SESSION)
+
+
+def test_openai_chat_provider_builds_chat_completions_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    write_agent(
+        tmp_path / "agents",
+        "a",
+        model_table='[model]\nid = "openai-chat/my-model"\neffort = "low"\nbase_url = "http://localhost:9/v1"\n',
+    )
+    runtime = Runtime.load(write_runtime(tmp_path))
+
+    agent = runtime.factory.build("a", SESSION)
+
+    from strands.models.openai import OpenAIModel
+
+    assert isinstance(agent.model, OpenAIModel)
+    config = agent.model.get_config()
+    assert config["model_id"] == "my-model"
+    assert config["params"] == {"reasoning_effort": "low"}
+
+
+def test_openai_chat_api_key_env_selects_a_per_agent_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "official-key")
+    monkeypatch.setenv("LOCAL_LLM_KEY", "local-key")
+    agents = tmp_path / "agents"
+    write_agent(agents, "official", model_table='[model]\nid = "openai-chat/gpt-x"\n')
+    write_agent(
+        agents,
+        "local",
+        model_table=(
+            '[model]\nid = "openai-chat/org/model:tag"\nbase_url = "http://localhost:9/v1"\n'
+            'api_key_env = "LOCAL_LLM_KEY"\n'
+        ),
+    )
+    runtime = Runtime.load(write_runtime(tmp_path))
+
+    from strands.models.openai import OpenAIModel
+
+    official = runtime.factory.build("official", SESSION)
+    local = runtime.factory.build("local", SESSION)
+    assert isinstance(official.model, OpenAIModel) and isinstance(local.model, OpenAIModel)
+    assert official.model.client_args.get("api_key") is None  # openai SDK falls back to OPENAI_API_KEY
+    assert local.model.client_args == {"base_url": "http://localhost:9/v1", "api_key": "local-key"}
+    assert local.model.get_config()["model_id"] == "org/model:tag"
+
+
+def test_openai_chat_missing_api_key_env_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NO_SUCH_KEY", raising=False)
+    write_agent(tmp_path / "agents", "a", model_table='[model]\nid = "openai-chat/m"\napi_key_env = "NO_SUCH_KEY"\n')
+    runtime = Runtime.load(write_runtime(tmp_path))
+    with pytest.raises(DefinitionError, match="NO_SUCH_KEY"):
+        runtime.factory.build("a", SESSION)
+
+
+def test_openai_chat_base_url_requires_that_provider(tmp_path: Path) -> None:
+    write_agent(tmp_path / "agents", "a", model_table='[model]\nid = "openai/gpt-x"\nbase_url = "http://x"\n')
+    with pytest.raises(DefinitionError, match="base_url"):
+        Runtime.load(write_runtime(tmp_path))

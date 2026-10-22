@@ -2,11 +2,8 @@ name = "assistant"
 description = "汎用アシスタント。質問に答え、必要なら現在時刻を調べる。"
 tools = ["./tools/current_time.py"]
 
-[model]
-effort = "low"
-
-[model.config]
-max_tokens = 4096
+# モデルは runtime.toml の default_id（環境変数 RUNTIME_DEFAULT_MODEL で切り替え）を使う。
+# プロバイダー固有の設定（Bedrock の max_tokens など）は [model.config] に書く。
 
 [limits]
 turns = 20

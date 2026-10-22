@@ -241,6 +241,8 @@ output_tokens = 32000
 | `model.effort` | enum | `"auto"` | 同上（プロバイダー別の thinking/reasoning 設定に変換） |
 | `model.caching` | bool | `true` | 同上（`CacheConfig`） |
 | `model.config` | table | `{}` | `model.update_config(**config)`。キーはプロバイダーの `*Config` TypedDict |
+| `model.base_url` | str | なし | `openai-chat/` 専用。接続先（省略時 `OPENAI_BASE_URL`） |
+| `model.api_key_env` | str | なし | `openai-chat/` 専用。キーを保持する環境変数名（省略時 `OPENAI_API_KEY`） |
 | `model.module` | `"pkg.mod:factory"` | なし | 7 プロバイダー以外や `ModelRouter` を使う逃げ道。`id` と排他 |
 | `tools` | list[str] | `[]` | `Agent(tools=[...])` に文字列のまま渡す（SDK のローダーを使う）。相対パスは定義ディレクトリ基準で絶対化 |
 | `skills` | list[str] | `["./skills"]`（存在時） | `AgentSkills(skills=[...])` を `plugins` に追加 |
@@ -347,8 +349,12 @@ def build(self, d: AgentDefinition, session: SessionContext) -> Agent:
 ### 5.2 モデル解決
 
 - `"provider/id"` 文字列は `strands_harness.models.resolve_model` に委ねる。
-  対応プロバイダーは `bedrock`、`bedrock-mantle`、`anthropic`、`openai`、`google`、`ollama`、`litellm`。
+  対応プロバイダーは `bedrock`、`bedrock-mantle`、`anthropic`、`openai`（Responses API）、`google`、`ollama`、`litellm`。
   `effort` はプロバイダーとモデルファミリーに対して検証され、Bedrock の Claude なら `additional_request_fields.thinking`、Anthropic なら `params.thinking` などに変換される。
+- 例外として **`openai-chat/<model>`** は本ランタイム固有のプロバイダーで、`strands.models.OpenAIModel`（Chat Completions）を直接構築する。
+  ハーネスの `openai/` は Responses API を使うため、Chat Completions しか実装しない OpenAI 互換サーバー（vLLM、Ollama、LiteLLM プロキシ等）に接続できない。
+  エンドポイントは `model.base_url` または環境変数 `OPENAI_BASE_URL`、キーは `model.api_key_env` で名指しした環境変数（既定 `OPENAI_API_KEY`）。
+  `base_url` と `api_key_env` をエージェントごとに持てるため、OpenAI 公式と互換サーバーを 1 つのランタイムで同時に使える。`effort` は明示されたときだけ `reasoning_effort` として送る。
 - `model.config` は `Model.update_config(**config)` でプロバイダー固有設定を上書きする。
   キー名は Strands 各プロバイダーの `*Config` TypedDict に従う（例: Bedrock は `max_tokens`、`temperature`、`guardrail_id`、`service_tier`。Anthropic は `max_tokens`、`params`）。
   ランタイムはキーを解釈しない。

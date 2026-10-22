@@ -55,6 +55,33 @@ result = client.invoke("続きをお願い", agent="assistant", session_id=sid)
 print(result.text, result.metrics)
 ```
 
+## OpenAI / OpenAI 互換 API で動かす
+
+モデルは `runtime.toml` の `default_id`（環境変数 `RUNTIME_DEFAULT_MODEL` で上書き可）か、各 `agent.toml` の `[model] id` で選びます。
+
+```bash
+export OPENAI_API_KEY=...                      # キーは環境変数で渡す（TOML には書かない）
+export RUNTIME_DEFAULT_MODEL=openai-chat/gpt-4.1-mini
+# OpenAI 互換サーバーなら加えて:
+# export OPENAI_BASE_URL=http://localhost:11434/v1
+uv run --extra openai strands-runtime run assistant "今日は何日？"
+```
+
+| id の形式 | 使う API | 用途 |
+|---|---|---|
+| `openai/<model>` | OpenAI Responses API（strands-harness 経由、effort 変換あり） | OpenAI 本家 |
+| `openai-chat/<model>` | Chat Completions（`strands.models.OpenAIModel`） | OpenAI 互換サーバー全般。`[model] base_url` で接続先、`api_key_env` でキーの環境変数名を指定可 |
+
+公式と互換サーバーを同時に使うときは、エージェントごとに接続先とキーの環境変数を分けます。
+
+```toml
+# agents/local-llm/agent.toml
+[model]
+id = "openai-chat/meta-llama/Llama-3.1-8B-Instruct"
+base_url = "http://localhost:8000/v1"
+api_key_env = "LOCAL_LLM_API_KEY"      # 値ではなく変数名。OPENAI_API_KEY は公式側に残せる
+```
+
 ## Docker
 
 ```bash

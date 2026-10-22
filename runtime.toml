@@ -3,7 +3,8 @@ agents_dir = "./agents"
 default_agent = "assistant"
 
 [model]
-default_id = "bedrock/global.anthropic.claude-opus-5"
+# 例: RUNTIME_DEFAULT_MODEL=openai-chat/gpt-4.1-mini（OpenAI 互換 Chat Completions）
+default_id = "${RUNTIME_DEFAULT_MODEL:-bedrock/global.anthropic.claude-opus-5}"
 
 [session]
 backend = "local"

@@ -45,12 +45,23 @@ class ModelSpec(_Strict):
     module: NonBlankStr | None = None
     effort: Effort = "auto"
     caching: bool = True
+    base_url: NonBlankStr | None = None
+    """Endpoint for the ``openai-chat`` provider (OpenAI-compatible Chat Completions); default ``OPENAI_BASE_URL``."""
+    api_key_env: NonBlankStr | None = None
+    """Name of the environment variable holding the key for ``openai-chat``; default ``OPENAI_API_KEY``.
+
+    Lets one runtime talk to several OpenAI-compatible endpoints with different keys. The value never
+    appears in TOML, only the variable name.
+    """
     config: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _id_xor_module(self) -> ModelSpec:
         if self.id is not None and self.module is not None:
             raise ValueError("model.id and model.module are mutually exclusive")
+        for key in ("base_url", "api_key_env"):
+            if getattr(self, key) is not None and not (self.id or "").startswith("openai-chat/"):
+                raise ValueError(f"model.{key} is only valid with an 'openai-chat/<model>' id")
         swallowed = sorted(set(self.config) & AGENT_TOP_LEVEL_KEYS)
         if swallowed:
             raise ValueError(
