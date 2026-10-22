@@ -131,7 +131,11 @@ def _serve(runtime: Runtime, args: argparse.Namespace) -> int:
     from strands_runtime.server import create_app
 
     app = create_app(runtime)
-    app.run(port=args.port or runtime.config.server.port, host=args.host or runtime.config.server.host)
+    port = args.port or runtime.config.server.port
+    host = args.host or runtime.config.server.host or "127.0.0.1"
+    print(f"strands-runtime: serving {', '.join(runtime.registry.published)} at http://{host}:{port}", flush=True)
+    print("  POST /invocations  GET /ping   (Ctrl-C to stop)", flush=True)
+    app.run(port=port, host=args.host or runtime.config.server.host)
     return 0
 
 

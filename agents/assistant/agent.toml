@@ -2,8 +2,11 @@ name = "assistant"
 description = "汎用アシスタント。質問に答え、必要なら現在時刻を調べる。"
 tools = ["./tools/current_time.py"]
 
-# モデルは runtime.toml の default_id（環境変数 RUNTIME_DEFAULT_MODEL で切り替え）を使う。
-# プロバイダー固有の設定（Bedrock の max_tokens など）は [model.config] に書く。
+[model]
+# OpenRouter（OpenAI 互換 Chat Completions）。キーは環境変数 OPENROUTER_API_KEY に置く。
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 
 [limits]
 turns = 20
