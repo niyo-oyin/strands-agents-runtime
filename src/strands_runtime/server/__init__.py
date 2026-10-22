@@ -1,4 +1,4 @@
-"""HTTP surface: the AgentCore Runtime contract (``POST /invocations``, ``GET /ping``), also used locally."""
+"""HTTP surface: ``POST /invocations`` + ``GET /ping`` (AgentCore-compatible, works on any container platform)."""
 
 from strands_runtime.server.app import create_app, run_app
 

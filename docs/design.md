@@ -11,7 +11,7 @@
 ### 1.1 目的
 
 [Strands Agents SDK](https://strandsagents.com/) を土台に、
-**エージェントをコードではなく設定ファイルで宣言し、同一の成果物をローカル・Docker・Amazon Bedrock AgentCore Runtime で動かせる** 汎用エージェントランタイムを提供する。
+**エージェントをコードではなく設定ファイルで宣言し、同一の成果物をローカル・Docker・任意のコンテナ基盤（ECS、Azure Container Apps など）・Amazon Bedrock AgentCore Runtime で動かせる** 汎用エージェントランタイムを提供する。
 
 ランタイムが解決する課題は次の 3 つである。
 
@@ -19,7 +19,7 @@
    ベンダー、モデル ID、推論パラメータ、ツール、MCP サーバー、スキル、プロンプト、セッション方式を TOML（設定）と Markdown（プロンプト）で記述する。
    Python コードを書くのはカスタムツールを追加するときだけに限定する。
 2. **実行環境の可搬性**
-   ローカル開発、Docker、AgentCore Runtime の 3 環境で同じ HTTP 契約・同じエージェント定義・同じコンテナイメージを使う。
+   ローカル開発、Docker、汎用のコンテナ基盤、AgentCore Runtime のいずれでも同じ HTTP 契約・同じエージェント定義・同じコンテナイメージを使う。AgentCore はデプロイ先の一つであり、設計の中心には置かない。
 3. **シンプルな呼び出し**
    クライアント（ローカルの別プログラム、Lambda 等）はエージェント名とプロンプトを含む JSON ペイロードを送るだけで、ストリーミングまたは一括で結果を受け取れる。
 
@@ -28,7 +28,7 @@
 - グラフ・スワームなどの複雑なマルチエージェントワークフローの実装（第 3 フェーズで検討。[§8](#8-オーケストレーションとエージェント連携) に拡張点を定義）
 - Web UI、チャット UI
 - Strands SDK が提供しない独自のモデルプロバイダー実装
-- エージェント定義のホットリロード（AgentCore Runtime のバージョンは不変であり、再デプロイが正規の更新手段）
+- エージェント定義のホットリロード（成果物を不変に保ち、再デプロイを正規の更新手段とする。[§11.6](#116-定義の配置方式焼き込み--マウント--s3-同期)）
 
 ### 1.3 設計原則
 
@@ -37,7 +37,7 @@
 - **SDK に寄せる**: Strands SDK と `bedrock-agentcore` SDK が既に持つ機能（モデル解決、MCP 設定の読み込み、スキル、セッション永続化、OTel 計装、HTTP サーバー）は再実装せず、そのまま使う。
   本ランタイムの固有コードは「TOML/Markdown の読み込み」「定義から `Agent` を組み立てる工場」「ペイロード契約」「クライアント」に限定する。
 - **後方互換レイヤーを持たない**: 非推奨化が進む `strands-agents-tools` パッケージや Python 版 starter toolkit には依存しない。
-- **1 つの成果物**: ローカルと AgentCore で別のエントリポイントを持たない。`BedrockAgentCoreApp` をそのままローカルサーバーとしても使う。
+- **1 つの成果物**: 環境ごとに別のエントリポイントを持たない。HTTP 契約（`POST /invocations`、`GET /ping`、SSE）は AgentCore 互換の汎用契約で、どのコンテナ基盤でも成り立つ。サーバー実装には `BedrockAgentCoreApp`（中身は Starlette アプリ）を使う。
 
 ---
 
@@ -138,7 +138,7 @@ strands_runtime/
 ### 3.3 実行時のデータフロー
 
 1. 起動時に `runtime.toml`（環境変数 `STRANDS_RUNTIME_CONFIG` で場所を変更可、既定 `./runtime.toml`）を読み、`Registry` が `runtime.agents_dir` 配下を走査して各 `agent.toml` と `prompt.md` を検証し `AgentDefinition` にする。
-   定義エラーは起動失敗にする（AgentCore V2 では最初の `/ping` が健全になった時点でスナップショットされるため、起動時検証が重要）。
+   定義エラーは起動失敗にする。壊れた定義を持つ成果物はヘルスチェックを通らず、どの基盤でもロールアウトが止まる（AgentCore V2 では最初の `/ping` が健全になった時点でスナップショットされるため、なおさら重要）。
 2. リクエスト到着時、サーバー層がペイロードを検証し、セッション ID を解決する（[§6.3](#63-セッション-id-の解決)）。
 3. `Invoker` が `AgentFactory` に定義名とセッション情報を渡し、**リクエストごとに `strands.Agent` を構築**する。
    Strands の `Agent` は会話履歴を保持するステートフルなオブジェクトであり、セッション状態の復元は `SessionManager` が担うため、毎回構築するのが SDK の想定パターンである。
@@ -276,7 +276,7 @@ timeout_seconds = 120                    # ランタイムが強制する実時�
 agents_dir = "./agents"
 default_agent = "support-bot"            # payload.agent 省略時に使う
 # enabled_agents = ["support-bot"]       # 省略時は agents_dir 配下の全定義を公開。
-                                         # エージェント単位で別デプロイするときに絞り込む（§11.4）
+                                         # エージェント単位で別デプロイするときに絞り込む（§11.5）
 
 [model]
 default_id = "bedrock/global.anthropic.claude-opus-5"
@@ -442,6 +442,8 @@ AgentCore はセッション ID を 33 文字以上に制約するため、ク�
 
 ## 7. 呼び出しプロトコル
 
+契約は AgentCore Runtime の HTTP 契約と互換だが、AgentCore 固有の前提は置かない。`POST /invocations` と `GET /ping` だけで構成されるため、ALB 配下の ECS、Azure Container Apps、Cloud Run など任意のコンテナ基盤でそのまま公開できる。
+
 ### 7.1 リクエスト（`POST /invocations`）
 
 ```json
@@ -501,7 +503,7 @@ Strands の生イベント（`stream_async` の dict）は量が多く、シリ�
 ### 7.3 非ストリーミングレスポンス
 
 `stream: false` のとき、`result` イベントと同じ構造の JSON を `application/json` で返す。
-AgentCore の同期リクエストは 15 分で打ち切られるため、長時間タスクはストリーミングを使う（ストリーミングは最長 60 分）。
+同期応答は基盤側のタイムアウトに従う（AgentCore では 15 分、ロードバランサー配下ではそのアイドルタイムアウト）。長時間タスクはストリーミングを使い、それでも収まらないものは [§7.6](#76-長時間実行ジョブと進捗設計予定) のジョブで扱う。
 
 ### 7.4 ヘルスチェック（`GET /ping`）
 
@@ -521,15 +523,15 @@ AgentCore の同期リクエストは 15 分で打ち切られるため、長時
 ### 7.6 長時間実行（ジョブ）と進捗（設計予定）
 
 1 回の呼び出しが数十分から 1 時間以上走る可能性を考慮する。
-AgentCore の同期呼び出しは 15 分、ストリーミングでも 60 分が上限であり、接続を保ち続ける前提は成り立たない。
-また AgentCore の HTTP 契約は `/invocations` と `/ping` だけなので、非同期の操作はすべて `/invocations` のペイロードで表現する。
+どの基盤にも接続のタイムアウトがあり（AgentCore では同期 15 分・ストリーミング 60 分、ロードバランサーにはアイドルタイムアウト）、接続を保ち続ける前提は成り立たない。
+また本ランタイムの HTTP 契約は `/invocations` と `/ping` に限定しているため、非同期の操作もすべて `/invocations` のペイロードで表現する。
 
 設計の骨子（未実装。ロードマップ A3 で契約を確定してから実装する）:
 
 | 要素 | 方針 |
 |---|---|
 | 受付 | ペイロードに `mode = "job"` を指定すると、ランタイムは実行をバックグラウンドタスクとして開始し、即座に `job` イベント（ジョブ ID = `session_id`、受付時刻）を返す |
-| 生存 | 実行中は `/ping` を `HealthyBusy` にし、AgentCore のアイドル終了を防ぐ（最長時間 8 時間の範囲内）。ローカル・Docker ではプロセスが生きている限り続く |
+| 生存 | 実行中は `/ping` を `HealthyBusy` にする。AgentCore ではこれがアイドル終了を防ぐ（最長 8 時間）。他の基盤ではプロセスが生きている限り続き、スケールインから守るかどうかは基盤側の設定に従う |
 | 進捗と結果の保管 | 既存のセッションストレージ（local / s3 / AgentCore Memory）に、進捗イベントの列と最終結果を書く。プロセスが落ちても「どこまで進んだか」は残る |
 | 取り出し | 同じ `session_id` への後続呼び出し `mode = "status"`（進捗の要約と直近イベント）、`mode = "result"`（`result` または `error`）、`mode = "cancel"`（`cancel_signal`） |
 | 語彙 | 進捗は同期ストリームと同じイベント型（`tool_use`、`tool_result`、`node_start` / `node_stop` / `handoff`）を使い、クライアントが 2 種類の表現を持たなくて済むようにする |
@@ -539,7 +541,7 @@ AgentCore の同期呼び出しは 15 分、ストリーミングでも 60 分�
 未決の論点:
 
 - 結果の保持期間とサイズ上限（セッションストレージに置く以上、セッションの TTL に従うのが自然）。
-- プロセス再起動後の扱い。AgentCore では microVM ごと失われるため「中断」として記録し、再開はチェックポイント（Strands `checkpointing`）の採用可否とあわせて判断する。
+- プロセス再起動後の扱い。プロセス内のタスクは失われるため「中断」として記録し、再開はチェックポイント（Strands `checkpointing`）の採用可否とあわせて判断する。
 - `stream = true` の長時間実行（60 分未満）と `mode = "job"` の使い分けを、クライアントライブラリでどう見せるか。
 
 ## 8. オーケストレーションとエージェント連携
@@ -605,16 +607,32 @@ curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
 
 ### 11.2 Docker
 
-- ベースイメージ `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`、`linux/arm64` でビルドする（AgentCore の要件に合わせ、ローカルも ARM64 Mac で同じイメージを使う）。
+- ベースイメージ `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`。既定は `linux/arm64`（AgentCore が要求し、ARM64 Mac でもそのまま動く）。x86_64 の基盤では `--platform` を変える。
 - `uv sync --frozen --no-dev` で依存を固定し、非 root ユーザーで実行する。
 - `ENV DOCKER_CONTAINER=1` を置き、`app.run()` が `0.0.0.0` に束縛するようにする。
-- `CMD ["opentelemetry-instrument", "strands-runtime", "serve", "--port", "8080"]`。`--port` が `runtime.toml` の値より優先されるため、開発用に別ポートを書いていてもコンテナ内は AgentCore 契約の 8080 で待ち受ける。
+- `CMD ["opentelemetry-instrument", "strands-runtime", "serve", "--port", "8080"]`。`--port` が `runtime.toml` の値より優先されるため、開発用に別ポートを書いていてもコンテナ内は契約どおり 8080 で待ち受ける。
 - モデルプロバイダーの extras はビルド引数 `EXTRAS`（既定 `agentcore-otel openai`）で選ぶ。
 - `agents/` と `runtime.toml` をイメージに含める。環境差分は環境変数で与える（ローカル実行は `--env-file .env`）。
 - ローカルでコンテナを動かすときは OTel コレクターがないため `OTEL_SDK_DISABLED=true` を渡す。イメージには焼き込まない（AgentCore 上では Runtime が注入する ADOT 設定を生かす）。
 - 確認済み（2026-10-22）: Apple Silicon 上で linux/arm64 イメージをビルドし、OpenRouter の実モデルでツール呼び出し・セッション継続・非ストリーミング応答が動作。イメージは約 945 MB。
 
-### 11.3 AgentCore Runtime
+### 11.3 汎用コンテナ基盤（ECS、Azure Container Apps、Cloud Run など）
+
+Docker イメージをそのまま 1 サービスとして動かす。契約が `POST /invocations` と `GET /ping` だけなので、基盤固有の対応は不要で、設定すべきは次の点に限られる。
+
+| 項目 | 方針 |
+|---|---|
+| ヘルスチェック | `GET /ping` を使う（`{"status": "Healthy"}`） |
+| セッション ID | ヘッダー `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` は任意。ペイロードの `session_id` でよい |
+| セッションの保存先 | `s3`（AWS）または `local` に永続ボリューム。複数レプリカで同じセッションを扱う場合は永続化が前提になる。S3 以外のオブジェクトストア（Azure Blob など）は Strands の `Storage` 実装をモジュール参照で差し込めるようにする（ロードマップ） |
+| 同一セッションの同時実行 | 409 による排他はプロセス内だけ。レプリカをまたぐ競合を避けるには、ロードバランサーで `session_id` によるスティッキールーティングを行うか、1 セッションが 1 レプリカに閉じる構成にする |
+| タイムアウト | ロードバランサーのアイドルタイムアウトを SSE に合わせて延ばす。それでも足りないものは [§7.6](#76-長時間実行ジョブと進捗設計予定) のジョブ |
+| 認証 | ランタイムは実装しない。ALB / Front Door / API Gateway などの前段で行う |
+| 観測性 | 標準の `OTEL_*` 環境変数でコレクターに送る。`opentelemetry-instrument` は汎用の OpenTelemetry 配布でよく、ADOT は必須ではない |
+| アーキテクチャ | 既定は linux/arm64。x86_64 の基盤ではビルド時に `--platform` を変えるだけ |
+| シークレット | 基盤のシークレット機構（ECS の Secrets Manager 参照、Azure の Key Vault 参照など）で環境変数に注入する |
+
+### 11.4 AgentCore Runtime
 
 **IaC は CDK（Python、`aws_cdk.aws_bedrockagentcore`）を正とし、`infra/` に置く。**
 理由は [ADR-4](#adr-4-デプロイは-cdk-を正とし-python-版-starter-toolkit-には依存しない) に記す。
@@ -634,9 +652,9 @@ curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
 - Runtime V2（スナップショット方式、コールドスタート約 2 秒）は CloudFormation（`PlatformVersion`）、CDK（`platformVersion: PlatformVersion.V2`）、Terraform（`platform_version`）のいずれも対応済み（開発者ガイドの「未対応」注記は古い）。本ランタイムは定義を起動時に読み込んで焼き込む設計で、V2 の「起動時の状態はスナップショットに凍結される」性質と整合する。最初の `/ping` が 120 秒以内に健全になること、環境変数の合計が 1.5〜2.5 KB に収まることを確認したうえで、フェーズ 2 で V2 を既定にする。
 - `@aws/agentcore` CLI（Node）は開発者のローカル検証（`agentcore dev`、`agentcore invoke`）に使ってもよいが、本番の IaC には使わない。
 
-### 11.4 複数エージェントのデプロイ単位
+### 11.5 複数エージェントのデプロイ単位
 
-1 つのイメージに全定義を含めたうえで、Runtime リソースをどう切るかは運用要件で選ぶ。どちらも同じ成果物と同じ CDK コンストラクトで実現し、差は Runtime ごとの `runtime.toml`（`enabled_agents` など）と、それを選ぶ `STRANDS_RUNTIME_CONFIG` だけにする。
+1 つのイメージに全定義を含めたうえで、デプロイ単位（AgentCore の Runtime、ECS のサービスなど）をどう切るかは運用要件で選ぶ。どちらも同じ成果物と同じ CDK コンストラクトで実現し、差は Runtime ごとの `runtime.toml`（`enabled_agents` など）と、それを選ぶ `STRANDS_RUNTIME_CONFIG` だけにする。
 
 | 方式 | 構成 | 向くケース |
 |---|---|---|
@@ -646,10 +664,10 @@ curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
 CDK スタックは Runtime の一覧（名前、読む `runtime.toml`、環境変数、ライフサイクル設定）をパラメーター化し、単一 Runtime は要素 1 つの特殊形として扱う。
 エージェント単位に分けた場合、Runtime 間の連携は `subagents`（同じプロセス内で構築）ではなく A2A または `AgentCoreClient` 経由になる（[§8](#8-オーケストレーションとエージェント連携)）。
 
-### 11.5 定義の配置方式（焼き込み / マウント / S3 同期）
+### 11.6 定義の配置方式（焼き込み / マウント / S3 同期）
 
 ランタイムは `STRANDS_RUNTIME_CONFIG` が指す `runtime.toml` と、その `agents_dir` 配下を**起動時に**読んで検証する。
-AgentCore Runtime の仕様（2026-10-22 調査、[付録 C](#付録-c-agentcore-runtime-のファイルシステムに関する調査結果)）を踏まえると、配置方式の選択肢は次のとおり。
+配置方式の選択肢は次のとおり。表の「更新の反映」「起動時ロードとの相性」は AgentCore Runtime の仕様（2026-10-22 調査、[付録 C](#付録-c-agentcore-runtime-のファイルシステムに関する調査結果)）を基準に書いているが、汎用コンテナ基盤ではマウントが起動時から見えるため「定義ディレクトリのマウント」も成立する。それでも既定を焼き込みにする理由（成果物とバージョンの対応、`validate` を通ったものだけが出る）は基盤に依らない。
 
 | 方式 | 構成 | 更新の反映 | 不変性 | 起動時ロードとの相性 | 追加コード |
 |---|---|---|---|---|---|
@@ -667,17 +685,17 @@ AgentCore Runtime の仕様（2026-10-22 調査、[付録 C](#付録-c-agentcore
 - **同じイメージから複数 Runtime を作る**ときは、Runtime ごとの `runtime.toml` を**すべてイメージに焼き込み**、`STRANDS_RUNTIME_CONFIG=/app/deploy/<name>/runtime.toml` で選ぶ。環境変数は小さなパス 1 つで、V2 の 1.5〜2.5 KB 制限にも収まる。
 - **Configuration Bundles** は、運用者がプロンプトやモデルをリクエスト単位で差し替える AWS ネイティブの経路として有望（クライアントではなく運用者の制御チャネルなので、ペイロードでの上書き禁止と矛盾しない）。TOML 定義のどのキーを上書き可能にするかの設計が必要で、フェーズ 3 の検討項目とする。
 
-### 11.6 環境ごとの差分まとめ
+### 11.7 環境ごとの差分まとめ
 
-| 項目 | ローカル | Docker | AgentCore |
-|---|---|---|---|
-| 起動 | `strands-runtime serve` | 同じイメージ | 同じイメージ（または code zip） |
-| バインド | `127.0.0.1:8080` | `0.0.0.0:8080` | `0.0.0.0:8080` |
-| セッション | `local` | `s3` または `local`（検証用） | `s3` または `agentcore_memory` |
-| 認証 | なし | なし | SigV4 / JWT |
-| セッション ID | ペイロードまたはヘッダー | 同左 | ヘッダー（AgentCore が付与） |
-| トレース | `OTEL_TRACES_EXPORTER` で任意 | 同左 | ADOT 自動 |
-| AWS 認証情報 | ローカルプロファイル | 環境変数 / マウント | 実行ロール |
+| 項目 | ローカル | Docker | 汎用コンテナ基盤 | AgentCore |
+|---|---|---|---|---|
+| 起動 | `strands-runtime serve` | 同じイメージ | 同じイメージ | 同じイメージ（または code zip） |
+| バインド | `127.0.0.1:8080` | `0.0.0.0:8080` | `0.0.0.0:8080` | `0.0.0.0:8080` |
+| セッション | `local` | `s3` または `local`（検証用） | `s3`（または永続ボリュームの `local`） | `s3` または `agentcore_memory` |
+| 認証 | なし | なし | 前段（LB / API Gateway） | SigV4 / JWT |
+| セッション ID | ペイロードまたはヘッダー | 同左 | 同左 | ヘッダー（AgentCore が付与） |
+| トレース | `OTEL_TRACES_EXPORTER` で任意 | 同左 | `OTEL_*` でコレクターへ | ADOT 自動 |
+| AWS 認証情報 | ローカルプロファイル | 環境変数 / マウント | 基盤のロール / 不要 | 実行ロール |
 
 ---
 
@@ -758,7 +776,7 @@ CI サービスや AWS アカウントがなくても進められるよう、検
 
 1. **パッケージ名・CLI 名**（`strands-agents-runtime` / `strands_runtime` / `strands-runtime`）。公式の `strands-*` 名との混同を避けるなら別名（例: `agentrt`）も候補。
 2. **既定モデル**（`bedrock/global.anthropic.claude-opus-5`、strands-harness の既定と同じ）。利用リージョンで有効な Bedrock モデル ID を確認する必要がある。
-3. **AgentCore の既定セッションバックエンド**（`s3`）。AgentCore Memory を標準にするかはコスト（イベント課金）と長期記憶の必要性で判断。
+3. **コンテナ基盤での既定セッションバックエンド**（`s3`）。AgentCore では AgentCore Memory を標準にするかをコスト（イベント課金）と長期記憶の必要性で判断。
 4. **デプロイ方式の既定**（コンテナ）。code zip はフェーズ 2 で評価後に決定。
 5. **クライアントの配布形態**（同一パッケージの extras）。Lambda のサイズ要件が厳しければ別配布。
 6. **インバウンド認証**（SigV4）。外部 IdP の JWT を使う要件があるか。

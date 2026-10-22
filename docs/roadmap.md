@@ -107,7 +107,11 @@ namespace = "{actor_id}"
 
 `MemoryManager` とストアの配線。`actor_id` を名前空間にする設計は AgentCore Memory の actor スコープと一致する。`context_manager` の offload / stash プリセットも同時に。
 
-**A7. 運用の基礎**（必要になった順に）
+**A7. セッション保存先の拡張点**（小）
+
+`[session] backend = "module"` と `storage = "pkg.mod:make_storage"` で、Strands の `Storage` 実装（Azure Blob、GCS、Redis など）をモジュール参照で差し込めるようにする。ECS や Azure など S3 を前提にできない基盤でセッションを永続化するために要る。
+
+**A8. 運用の基礎**（必要になった順に）
 
 - グレースフルシャットダウン: SIGTERM で新規受付を止め、進行中の呼び出しに `cancel_signal` を立て、`Agent.shutdown()` と MCP クライアントの終了を待つ。
 - `/ping` の `HealthyBusy`（A3 の前提）。
@@ -123,7 +127,7 @@ namespace = "{actor_id}"
 ### B. AWS 連携（アカウント取得後）
 
 - **B1. AgentCore Identity による外部資格情報**: `api_key_env` に加え `api_key_provider` を受け、`@requires_api_key` / `@requires_access_token` で取得したトークンを MCP ヘッダーやモデルクライアントに渡す。環境変数のサイズ制限（V2 で 1.5〜2.5 KB）を根本的に解く。
-- **B2. Direct Code Deploy と Runtime V2**: 設計文書 §11.3 / §11.5。実機で確認して既定を決める。
+- **B2. Direct Code Deploy と Runtime V2**: 設計文書 §11.4 / §11.6。実機で確認して既定を決める。
 - **B3. Gateway をツールソースとして**: `[mcp_servers.gateway] url = ...` と B1 の認証で接続。意味検索・レート制限・Policy は Gateway に委ねる。
 - **B4. AgentCore Memory の長期戦略**: A6 の `store = "agentcore"` と CDK の `Memory` 戦略。
 - **B5. Configuration Bundles**: リクエストの `baggage` で指定された版を取得し、TOML が「上書き可能」と宣言したキーにだけ適用する。クライアントによる上書き禁止と矛盾しない運用者の経路。
@@ -152,7 +156,7 @@ namespace = "{actor_id}"
 1. **A1 フォールバック + A2 トークン数**。小さく、日々の体験に効く。
 2. **A3 ジョブと進捗の契約設計**。実装の前に設計文書で契約を確定する。長時間実行とマルチエージェントの両方がここに依存する。
 3. **A4 Graph / Swarm と進捗イベント**。A3 の契約の上に載せる。
-4. **A5 ツール制限、A6 長期記憶、A7 運用の基礎**は要求が具体化した順に。
+4. **A5 ツール制限、A6 長期記憶、A7 セッション保存先の拡張点、A8 運用の基礎**は要求が具体化した順に（ECS や Azure に載せる話が出たら A7 を先に）。
 5. AWS アカウント取得後に **B1 → B2 → B3 → B4 → B5**。
 6. **C1 A2A** は Runtime を分割する運用が始まるときに。
 

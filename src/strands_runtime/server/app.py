@@ -1,6 +1,6 @@
 """``BedrockAgentCoreApp`` wiring.
 
-The same app serves local development, Docker and AgentCore Runtime: AgentCore's SDK implements the
+The same app serves local development, Docker, any container platform and AgentCore Runtime: AgentCore's SDK implements the
 service contract (ports, ``/ping``, SSE framing, session header parsing), this module only maps the
 runtime's payload to an invocation.
 """

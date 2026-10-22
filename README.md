@@ -1,7 +1,7 @@
 # Strands Agents Runtime
 
 [Strands Agents SDK](https://strandsagents.com/) 上で、エージェントを **TOML（設定）と Markdown（プロンプト）で宣言**し、
-同じ成果物をローカル・Docker・Amazon Bedrock AgentCore Runtime で動かすためのランタイムです。
+同じ成果物をローカル・Docker・任意のコンテナ基盤（ECS、Azure Container Apps など）・Amazon Bedrock AgentCore Runtime で動かすためのランタイムです。
 設計の詳細は [docs/design.md](docs/design.md) を参照してください。
 
 ## 構成
@@ -18,7 +18,7 @@ src/strands_runtime/
   definitions/          # TOML スキーマ、ローダー、レジストリ
   factory/              # 定義 → strands.Agent
   invoke/               # 実行とイベント正規化
-  server/               # AgentCore 契約の HTTP サーバー（ローカルでも同じ）
+  server/               # HTTP サーバー（POST /invocations, GET /ping。AgentCore 互換の汎用契約）
   client/               # HttpClient / AgentCoreClient
   events.py             # サーバーとクライアントで共有するイベントスキーマ
 ```
@@ -124,7 +124,7 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml ru
 
 ## Docker
 
-同じイメージをローカルと Amazon Bedrock AgentCore Runtime で使います（linux/arm64、コンテナ内は `0.0.0.0:8080`）。
+同じイメージをローカル、任意のコンテナ基盤、Amazon Bedrock AgentCore Runtime で使います（既定 linux/arm64、コンテナ内は `0.0.0.0:8080`）。
 
 ```bash
 docker buildx build --platform linux/arm64 -t strands-runtime --load .
@@ -139,6 +139,13 @@ curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' -
 - 起動コマンドは `opentelemetry-instrument strands-runtime serve --port 8080`。AgentCore 上では Runtime が注入する ADOT の環境変数でトレースが CloudWatch に送られるため、`OTEL_SDK_DISABLED` は付けません。
 - `runtime.toml` の `[server] port` はコマンドラインの `--port 8080` で上書きされます。`log_file` はコンテナ内の `/app/.runtime/server.log` です。
 - Bedrock を使う場合は `-e AWS_REGION=... -v ~/.aws:/home/runtime/.aws:ro` などで資格情報を渡します。
+
+## 他のコンテナ基盤へのデプロイ（ECS、Azure Container Apps、Cloud Run など）
+
+契約が `POST /invocations` と `GET /ping` だけなので、イメージを 1 サービスとして動かすだけです。
+ヘルスチェックは `/ping`、セッション ID はペイロードの `session_id` で足ります（AgentCore のヘッダーは任意）。
+セッションの保存先は `s3` か永続ボリュームの `local`、認証は前段のロードバランサーや API Gateway、トレースは標準の `OTEL_*` でコレクターへ送ります。
+x86_64 の基盤では `--platform linux/amd64` でビルドしてください。詳細は設計文書 §11.3。
 
 ## AgentCore へのデプロイ（CDK）
 
