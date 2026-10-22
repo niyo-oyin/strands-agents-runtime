@@ -24,5 +24,13 @@ class UnknownAgentError(StrandsRuntimeError):
         super().__init__(f"unknown agent {name!r}; available: {', '.join(available) or '(none)'}")
 
 
+class SessionBusyError(StrandsRuntimeError):
+    """Another invocation is running for the same session in this process (mirrors AgentCore's 409)."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"session {session_id!r} already has an invocation in progress; retry later")
+
+
 class ReferenceResolutionError(StrandsRuntimeError):
     """A module/attribute reference in a definition could not be resolved."""

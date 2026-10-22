@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from strands.interventions import InterventionHandler
 from strands.plugins import Plugin
@@ -13,7 +15,9 @@ from strands.tools.mcp import MCPClient
 from strands.vended_plugins.skills import AgentSkills, Skill
 
 from strands_runtime.definitions.loader import ResolvedAgent
-from strands_runtime.factory.references import resolve_instance
+from strands_runtime.errors import DefinitionError
+from strands_runtime.factory.references import load_attribute, resolve_instance
+from strands_runtime.factory.sessions import SessionContext
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,35 @@ def build_skills(agent: ResolvedAgent, *, strict: bool = False) -> AgentSkills |
 
 def build_plugins(agent: ResolvedAgent) -> list[Plugin]:
     return [resolve_instance(ref, Plugin) for ref in agent.plugins]  # type: ignore[type-abstract]
+
+
+def build_context_injectors(agent: ResolvedAgent, session: SessionContext) -> list[Plugin]:
+    """``[context] inject`` entries → SDK ``ContextInjector`` plugins (ephemeral text on each user turn)."""
+    from strands.vended_plugins.context_injector import ContextInjector, InjectionContext
+
+    spec = agent.definition.context
+    plugins: list[Plugin] = []
+    for entry in spec.inject:
+        if entry == "datetime":
+            zone = ZoneInfo(spec.timezone)
+
+            def render_datetime(_: InjectionContext, zone: ZoneInfo = zone) -> str:
+                return f"<current_datetime>{datetime.now(zone).isoformat(timespec='seconds')}</current_datetime>"
+
+            plugins.append(ContextInjector(render_datetime, name=f"{agent.name}:inject:datetime"))
+        elif entry == "actor":
+            actor = session.actor_id
+
+            def render_actor(_: InjectionContext, actor: str = actor) -> str:
+                return f"<actor_id>{actor}</actor_id>"
+
+            plugins.append(ContextInjector(render_actor, name=f"{agent.name}:inject:actor"))
+        else:
+            render = load_attribute(entry)
+            if not callable(render):
+                raise DefinitionError(f"context.inject entry {entry!r} is not callable")
+            plugins.append(ContextInjector(render, name=f"{agent.name}:inject:{entry}"))
+    return plugins
 
 
 def build_interventions(agent: ResolvedAgent) -> list[InterventionHandler]:

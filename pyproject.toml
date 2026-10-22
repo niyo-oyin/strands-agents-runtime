@@ -53,7 +53,7 @@ packages = ["src/strands_runtime"]
 [tool.ruff]
 line-length = 120
 target-version = "py313"
-src = ["src", "tests"]
+src = ["src", "tests", "tests_integ"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN"]
@@ -61,6 +61,8 @@ ignore = ["ANN401"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
+# Live tests send Japanese prompts; full-width punctuation is intended there.
+"tests_integ/**" = ["ANN", "RUF001", "RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.13"

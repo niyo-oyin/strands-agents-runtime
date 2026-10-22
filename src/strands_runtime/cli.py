@@ -24,7 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("validate", help="load every definition and resolve code references")
+    validate = sub.add_parser("validate", help="load every definition, resolve code references, check skills")
+    validate.add_argument("--mcp", action="store_true", help="also start every MCP server and list its tools")
     sub.add_parser("list", help="list published agents")
 
     run = sub.add_parser("run", help="invoke an agent once without starting the server")
@@ -33,6 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--session-id")
     run.add_argument("--actor-id", default="anonymous")
     run.add_argument("--json", action="store_true", help="print every event as a JSON line")
+    run.add_argument("--state", help="invocation_state as a JSON object, passed to tools")
+    run.add_argument("--reasoning", action="store_true", help="include the model's reasoning events")
+    run.add_argument("--tool-results", choices=["preview", "full"], default="preview")
 
     serve = sub.add_parser("serve", help="start the HTTP server (AgentCore contract)")
     serve.add_argument("--host")
@@ -47,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime = Runtime.load(args.config)
         match args.command:
             case "validate":
-                return _validate(runtime)
+                return _validate(runtime, connect_mcp=args.mcp)
             case "list":
                 return _list(runtime)
             case "run":
@@ -60,10 +64,13 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _validate(runtime: Runtime) -> int:
+def _validate(runtime: Runtime, *, connect_mcp: bool = False) -> int:
     problems: list[str] = []
     for agent in runtime.registry:
         problems.extend(_check_references(agent))
+        problems.extend(_check_skills(agent))
+        if connect_mcp:
+            problems.extend(_check_mcp(agent))
     if problems:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
@@ -96,6 +103,37 @@ def _check_references(agent: ResolvedAgent) -> list[str]:
     return problems
 
 
+def _check_skills(agent: ResolvedAgent) -> list[str]:
+    """Parse every SKILL.md strictly (name/description present, name matches its directory)."""
+    if not agent.skills:
+        return []
+    from strands.vended_plugins.skills import AgentSkills
+
+    try:
+        AgentSkills(skills=list(agent.skills), strict=True)
+    except Exception as exc:  # the SDK raises plain ValueError/OSError variants here
+        return [f"{agent.name}: skills: {exc}"]
+    return []
+
+
+def _check_mcp(agent: ResolvedAgent) -> list[str]:
+    """Start each MCP server once and list its tools; slow, so only on request."""
+    if not agent.mcp_servers:
+        return []
+    from strands.tools.mcp import MCPClient
+
+    problems: list[str] = []
+    for server_name, config in agent.mcp_servers.items():
+        try:
+            [client] = MCPClient.load_servers({"mcpServers": {server_name: config}})
+            with client:
+                names = [tool.tool_name for tool in client.list_tools_sync()]
+            print(f"{agent.name}: mcp {server_name}: {', '.join(names) or '(no tools)'}")
+        except Exception as exc:
+            problems.append(f"{agent.name}: mcp {server_name}: {exc}")
+    return problems
+
+
 def _list(runtime: Runtime) -> int:
     for name in runtime.registry.published:
         d = runtime.registry.get(name).definition
@@ -106,7 +144,13 @@ def _list(runtime: Runtime) -> int:
 
 async def _run(runtime: Runtime, args: argparse.Namespace) -> int:
     request = InvocationRequest(
-        agent=args.agent, prompt=args.prompt, session_id=args.session_id, actor_id=args.actor_id
+        agent=args.agent,
+        prompt=args.prompt,
+        session_id=args.session_id,
+        actor_id=args.actor_id,
+        invocation_state=json.loads(args.state) if args.state else {},
+        include_reasoning=args.reasoning,
+        tool_result_detail=args.tool_results,
     )
     status = 0
     async for event in runtime.invoker.stream(request):

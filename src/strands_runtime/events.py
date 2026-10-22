@@ -42,7 +42,9 @@ class ToolResultEvent(_Event):
     tool_use_id: str
     status: str
     preview: str = ""
-    """The first text block of the result, truncated; full results stay inside the agent's history."""
+    """The first text block of the result, truncated."""
+    content: list[Any] | None = None
+    """The full result content blocks; only present when the request asked for ``tool_result_detail = "full"``."""
 
 
 class InterruptInfo(_Event):

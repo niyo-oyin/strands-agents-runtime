@@ -6,6 +6,7 @@ tests set the script with :func:`script` before invoking.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -18,6 +19,7 @@ from strands.types.tools import ToolSpec
 _SCRIPT: list[Message] = []
 _CALLS = 0
 _SEEN: list[Messages] = []
+_CHUNK_DELAY = 0.0
 
 
 def script(*responses: Message) -> None:
@@ -26,6 +28,12 @@ def script(*responses: Message) -> None:
     _SCRIPT[:] = list(responses)
     _SEEN.clear()
     _CALLS = 0
+
+
+def set_chunk_delay(seconds: float) -> None:
+    """Sleep this long before each streamed chunk (to exercise timeouts and cancellation)."""
+    global _CHUNK_DELAY
+    _CHUNK_DELAY = seconds
 
 
 def seen_messages() -> list[Messages]:
@@ -82,7 +90,10 @@ class ScriptedModel(Model):
         for block in response["content"]:
             if "text" in block:
                 yield {"contentBlockStart": {"start": {}}}
-                yield {"contentBlockDelta": {"delta": {"text": block["text"]}}}
+                for char in block["text"]:
+                    if _CHUNK_DELAY:
+                        await asyncio.sleep(_CHUNK_DELAY)
+                    yield {"contentBlockDelta": {"delta": {"text": char}}}
                 yield {"contentBlockStop": {}}
             if "toolUse" in block:
                 stop_reason = "tool_use"

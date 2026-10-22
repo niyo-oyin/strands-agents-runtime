@@ -218,6 +218,8 @@ disabled = false
 
 [context]
 manager = "auto"                         # auto|agentic|off（Strands の context_manager）
+inject = ["datetime", "actor"]           # 任意: 各ユーザーターンに注入する一時コンテキスト（履歴には残らない）
+timezone = "Asia/Tokyo"                  # datetime 注入のタイムゾーン
 
 [session]                                # 省略時は runtime.toml の [session] を継承
 backend = "inherit"
@@ -225,9 +227,10 @@ backend = "inherit"
 [structured_output]                      # 任意: 最終回答を pydantic モデルで返す
 model = "mycompany.schemas:SupportAnswer"
 
-[limits]                                 # 任意: 1 呼び出しの上限（Strands Limits）
-turns = 30
+[limits]                                 # 任意: 1 呼び出しの上限
+turns = 30                               # Strands Limits（turns / output_tokens / total_tokens）
 output_tokens = 32000
+timeout_seconds = 120                    # ランタイムが強制する実時間の上限
 ```
 
 #### スキーマ（主要キー）
@@ -249,6 +252,8 @@ output_tokens = 32000
 | `subagents` | list[str] | `[]` | 定義名を解決して構築した `Agent` を `tools` に追加 |
 | `mcp_servers` | table or path | `{}` | `MCPClient.load_servers(dict)` → `ToolProvider` として `tools` に追加 |
 | `context.manager` | enum or table | `"auto"` | `Agent(context_manager=)` |
+| `context.inject` | list[str] | `[]` | SDK の `ContextInjector`。組み込みは `datetime`（`context.timezone` で時刻帯指定）と `actor`（`actor_id`）。それ以外はモジュール参照で `(InjectionContext) -> str` を指す |
+| `limits.timeout_seconds` | float | なし | ランタイムの監視タイマー。超過時は `cancel_signal` で穏やかに停止させ `stop_reason = "timeout"` の `result` を返す。猶予（15 秒）内に止まらなければ `error`（`Timeout`） |
 | `session` | table | `inherit` | [§6](#6-セッションとメモリ) |
 | `structured_output.model` | module ref | なし | `Agent(structured_output_model=)` |
 | `limits` | table | なし | `agent.stream_async(limits=)` |
@@ -454,7 +459,12 @@ AgentCore はセッション ID を 33 文字以上に制約するため、ク�
 | `session_id` | str | なし | [§6.3](#63-セッション-id-の解決) |
 | `actor_id` | str | `"anonymous"` | 利用者識別子。メモリの名前空間とトレースの `user.id` に使う |
 | `stream` | bool | `true` | `false` で最終結果だけを JSON で返す |
-| `invocation_state` | object | `{}` | ツールに渡す任意のコンテキスト（`ToolContext.invocation_state`） |
+| `invocation_state` | object | `{}` | ツールに渡す任意のコンテキスト（`ToolContext.invocation_state`）。保存されない |
+| `include_reasoning` | bool | `false` | モデルの推論差分を `reasoning` イベントとして流す（推論モデルでは量が多いため既定は無効） |
+| `tool_result_detail` | `"preview"` or `"full"` | `"preview"` | `"full"` で `tool_result` に結果の content block 全体（`content`）を含める |
+
+`prompt` に content block の配列を渡す場合、`image` / `document` / `video` の `source.bytes` は base64 文字列で送る。ランタイムが bytes に復号して Strands に渡す。
+中断（`interrupt`）した会話は、同じ `session_id` で `prompt = [{"interruptResponse": {"interruptId": "...", "response": ...}}]` を送ると再開する。
 
 ペイロードの `system_prompt` や `model` の上書きは**許可しない**。
 エージェントの振る舞いは定義ファイルで確定させ、クライアントはそれを選ぶだけとする。
@@ -470,13 +480,20 @@ Strands の生イベント（`stream_async` の dict）は量が多く、シリ�
 | `text` | `text`（差分） | `data` イベント |
 | `reasoning` | `text`（差分） | `reasoningText` イベント |
 | `tool_use` | `tool_use_id`, `name`, `input` | `message`（assistant、toolUse ブロック） |
-| `tool_result` | `tool_use_id`, `status`、本文は長さ制限付きプレビュー | `message`（user、toolResult ブロック） |
+| `tool_result` | `tool_use_id`, `status`, `preview`（500 文字まで）、`tool_result_detail = "full"` のときは `content` も | `message`（user、toolResult ブロック） |
 | `interrupt` | `interrupts`（HITL 再開用）| `stop_reason == "interrupt"` |
 | `result` | `stop_reason`, `text`, `structured_output`, `metrics`, `session_id` | `result` イベント |
 | `error` | `error_type`, `message` | 例外（Strands が `force_stop` の後に再送出する例外を 1 件の `error` にまとめる）。結果もエラーもなく終わった場合は `NoResult` |
 
-`result.metrics` は `EventLoopMetrics` から入出力トークン数、レイテンシー、ツール呼び出し回数を抜き出す。
+`result.metrics` は `EventLoopMetrics` から入出力トークン数とツール呼び出し回数を抜き出し、`latency_ms` はランタイムが計測した呼び出し全体の実時間とする（プロバイダーによって SDK が報告しないため）。
 イベント型は pydantic モデルで定義し、サーバーとクライアントで同じモジュールを使う。
+
+`result.stop_reason` は Strands の値（`end_turn`、`max_tokens`、`interrupt`、`limit_turns` など）をそのまま使い、次の 2 つだけランタイムが置き換える。
+
+| 値 | 意味 |
+|---|---|
+| `structured_output` | `structured_output` に構造化回答が入っている（SDK ではツール呼び出し扱いで `tool_use` になる） |
+| `timeout` | `limits.timeout_seconds` 超過で停止した（SDK では `cancelled`） |
 
 ### 7.3 非ストリーミングレスポンス
 
@@ -490,6 +507,8 @@ AgentCore の同期リクエストは 15 分で打ち切られるため、長時
 
 ### 7.5 エラー
 
+- 同じ `session_id` の呼び出しが同一プロセスで実行中: HTTP 409（AgentCore の `RetryableConflictException` と同じ扱い）。履歴の競合を避けるため直列化ではなく拒否する
+- クライアントが途中で切断した場合: ランタイムは `cancel_signal` を立て、エージェントは次の安全な地点で停止して履歴を保存する
 - 定義名不明、ペイロード不正: HTTP 400 と `{"error": ..., "details": ...}`
 - 実行時例外: ストリーミング中なら `error` イベント、非ストリーミングなら HTTP 500
 - AgentCore はコンテナの 4xx/5xx を `424 RuntimeClientError` としてクライアントに返すため、クライアントライブラリはこれを例外に変換する。
@@ -658,7 +677,7 @@ print(result.text, result.structured_output)
 
 | フェーズ | 内容 | 完了条件 |
 |---|---|---|
-| 1（実装済み） | 定義フォーマット、ローダー、Factory（モデル・ツール・MCP・Skills・local/s3/agentcore_memory セッション・subagents・structured_output・limits・interventions）、Invoker とイベント正規化、HTTP サーバー、CLI（`validate`/`list`/`run`/`serve`）、Dockerfile、`HttpClient`、`AgentCoreClient` | ローカルと Docker で `curl` と `HttpClient` からストリーミング応答が得られる。実モデル・Docker・AgentCore での動作確認は未実施 |
+| 1（実装済み） | 定義フォーマット、ローダー、Factory（モデル・ツール・MCP・Skills・local/s3/agentcore_memory セッション・subagents・structured_output・limits・interventions・コンテキスト注入）、Invoker（イベント正規化、キャンセル、タイムアウト、同一セッション排他、base64 メディア、HITL 再開）、HTTP サーバー、CLI（`validate --mcp`/`list`/`run`/`serve`）、Dockerfile、`HttpClient`、`AgentCoreClient`、`tests_integ/`（実モデル） | ローカルで実モデル（OpenRouter）によりサブエージェント・Skills・MCP・構造化出力・limits・invocation_state・vended ツールを確認済み。Docker・AWS 上は未確認 |
 | 2 | CDK スタック（Runtime、ECR、ロール、Memory または S3）、`s3`/`agentcore_memory` セッションと `AgentCoreClient` の実環境検証、Lambda サンプル、観測性の確認、code zip の評価 | AgentCore 上で Lambda から呼び出し、CloudWatch でトレースを確認できる |
 | 3 | 長期記憶（`[memory]`）、Graph/Swarm/A2A の `kind` 拡張、HITL（interrupt 再開）、`prompt.md` の動的コンテキスト注入 | 設計 §8 の拡張点のうち優先度の高いものが利用可能 |
 

@@ -60,7 +60,7 @@ def test_http_client_stream_and_invoke(http_client: HttpClient) -> None:
     sid = new_session_id()
 
     streamed = list(http_client.stream("hi", agent="echoer", session_id=sid))
-    assert any(isinstance(e, TextEvent) and e.text == "streamed" for e in streamed)
+    assert "".join(e.text for e in streamed if isinstance(e, TextEvent)) == "streamed"
 
     result = http_client.invoke("again", agent="echoer", session_id=sid)
     assert result.text == "invoked" and result.session_id == sid

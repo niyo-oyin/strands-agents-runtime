@@ -27,7 +27,7 @@ src/strands_runtime/
 
 ```bash
 uv sync
-uv run strands-runtime validate                     # 定義とコード参照の検証
+uv run strands-runtime validate                     # 定義・コード参照・SKILL.md の検証（--mcp で MCP 接続も）
 uv run strands-runtime list                         # 公開エージェント一覧
 uv run strands-runtime run assistant "今日は何日？"   # サーバーなしで 1 回実行
 uv run strands-runtime serve                        # http://127.0.0.1:8080
@@ -95,6 +95,14 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml li
 uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run skilled "俳句スタイルで秋について" --json
 ```
 
+## 呼び出しの契約（要点）
+
+- `POST /invocations` の主なフィールド: `agent`、`prompt`（文字列または content block 配列。画像等の `source.bytes` は base64）、`session_id`、`actor_id`、`stream`、`invocation_state`、`include_reasoning`、`tool_result_detail`（`preview` / `full`）。
+- イベント: `start` → `text` / `reasoning` / `tool_use` / `tool_result` … → `result`（`stop_reason`、`text`、`structured_output`、`metrics`）または `error`。
+- `stop_reason` は Strands の値に加え、`structured_output`（構造化回答）と `timeout`（`[limits] timeout_seconds` 超過）をランタイムが返す。
+- 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）は `prompt = [{"interruptResponse": {...}}]` で再開。
+- 実モデルの結合テスト: `uv run --env-file .env pytest tests_integ -q`
+
 ## Docker
 
 ```bash
@@ -112,6 +120,7 @@ AgentCore Runtime へは同じイメージを ECR に置いてデプロイしま
 | `STRANDS_RUNTIME_CONFIG` | `runtime.toml` のパス（既定 `./runtime.toml`） |
 
 サーバーのログは標準エラー出力に加え、`runtime.toml` の `[server] log_file` を設定するとファイルにも書かれます（Python の警告も含む）。
+| `OPENROUTER_API_KEY` など | `[model] api_key_env` で名指しした変数 |
 | `OTEL_TRACES_EXPORTER` | `otlp` / `console`。未設定ならトレースを送らない。`opentelemetry-instrument` 配下では無視 |
 | `AWS_REGION` ほか | Bedrock / S3 / AgentCore Memory の資格情報とリージョン |
 

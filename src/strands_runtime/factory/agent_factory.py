@@ -18,6 +18,7 @@ from strands_runtime.factory.references import resolve_class
 from strands_runtime.factory.sessions import SessionContext, SessionManagerFactory, effective_session_spec
 from strands_runtime.factory.tools import (
     MCPClientCache,
+    build_context_injectors,
     build_interventions,
     build_plugins,
     build_skills,
@@ -62,7 +63,7 @@ class AgentFactory:
             child = self._build(sub, session.child(sub_name), depth=depth + 1, persist=False)
             tools.append(child.as_tool(name=sub.name, description=sub.definition.description or None))
 
-        plugins = build_plugins(resolved)
+        plugins = [*build_plugins(resolved), *build_context_injectors(resolved, session)]
         skills = build_skills(resolved)
         if skills is not None:
             plugins.append(skills)

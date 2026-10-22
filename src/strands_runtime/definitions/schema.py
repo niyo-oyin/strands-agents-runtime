@@ -72,9 +72,14 @@ class ModelSpec(_Strict):
 
 
 class ContextSpec(_Strict):
-    """``[context]`` table → ``Agent(context_manager=...)``."""
+    """``[context]`` table → ``Agent(context_manager=...)`` plus just-in-time context injection."""
 
     manager: ContextManagerName | dict[str, Any] = "auto"
+    inject: list[NonBlankStr] = Field(default_factory=list)
+    """Text injected into each user turn without touching history: built-in ``"datetime"`` and ``"actor"``,
+    or a module reference to a callable ``(InjectionContext) -> str | None`` (SDK ``ContextInjector``)."""
+    timezone: NonBlankStr = "UTC"
+    """IANA zone used by the ``datetime`` injector."""
 
 
 class RetrievalSpec(_Strict):
@@ -120,9 +125,11 @@ class LimitsSpec(_Strict):
     turns: int | None = Field(default=None, gt=0)
     output_tokens: int | None = Field(default=None, gt=0)
     total_tokens: int | None = Field(default=None, gt=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    """Wall-clock bound for one invocation, enforced by the runtime (the agent is cancelled, then drained)."""
 
     def to_limits(self) -> dict[str, int]:
-        return {k: v for k, v in self.model_dump().items() if v is not None}
+        return {k: v for k, v in self.model_dump(exclude={"timeout_seconds"}).items() if v is not None}
 
 
 class AgentDefinition(_Strict):

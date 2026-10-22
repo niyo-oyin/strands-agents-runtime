@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
-from strands_runtime.errors import UnknownAgentError
+from strands_runtime.errors import SessionBusyError, UnknownAgentError
 from strands_runtime.events import ErrorEvent
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.logging_setup import configure_logging
@@ -46,9 +46,17 @@ def create_app(runtime: Runtime) -> BedrockAgentCoreApp:
         header_session_id = context.session_id if context is not None else None
 
         if request.stream:
-            return _sse(runtime, request, header_session_id)
+            stream = runtime.invoker.stream(request, session_id=header_session_id)
+            try:
+                first = await anext(stream)  # UnknownAgent/SessionBusy surface here, before any SSE frame
+            except SessionBusyError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return _sse(first, stream)
 
-        result = await runtime.invoker.invoke(request, session_id=header_session_id)
+        try:
+            result = await runtime.invoker.invoke(request, session_id=header_session_id)
+        except SessionBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if isinstance(result, ErrorEvent):
             return JSONResponse(result.model_dump(mode="json"), status_code=500)
         return result.model_dump(mode="json")
@@ -56,9 +64,10 @@ def create_app(runtime: Runtime) -> BedrockAgentCoreApp:
     return app
 
 
-async def _sse(runtime: Runtime, request: InvocationRequest, session_id: str | None) -> AsyncIterator[dict[str, Any]]:
+async def _sse(first: Any, rest: AsyncIterator[Any]) -> AsyncIterator[dict[str, Any]]:
     """Each yielded mapping becomes one ``data: {...}`` SSE frame (framing done by the AgentCore SDK)."""
-    async for event in runtime.invoker.stream(request, session_id=session_id):
+    yield first.model_dump(mode="json")
+    async for event in rest:
         yield event.model_dump(mode="json")
 
 

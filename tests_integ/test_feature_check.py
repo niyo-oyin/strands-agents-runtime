@@ -1,0 +1,68 @@
+"""Live checks against the examples/feature-check agents (OpenRouter). Skipped without OPENROUTER_API_KEY.
+
+Run with:  uv run --env-file .env pytest tests_integ -q
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from strands_runtime.events import ResultEvent, ToolResultEvent, ToolUseEvent
+from strands_runtime.invoke import InvocationRequest
+from strands_runtime.runtime import Runtime
+
+pytestmark = pytest.mark.skipif(not os.environ.get("OPENROUTER_API_KEY"), reason="OPENROUTER_API_KEY is not set")
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="module")
+def runtime() -> Runtime:
+    return Runtime.load(ROOT / "examples" / "feature-check" / "runtime.toml")
+
+
+async def run(runtime: Runtime, agent: str, prompt: str, **options: object) -> list[object]:
+    request = InvocationRequest(agent=agent, prompt=prompt, **options)  # type: ignore[arg-type]
+    return [event async for event in runtime.invoker.stream(request)]
+
+
+def result_of(events: list[object]) -> ResultEvent:
+    final = events[-1]
+    assert isinstance(final, ResultEvent), final
+    return final
+
+
+async def test_skill_is_activated_and_followed(runtime: Runtime) -> None:
+    events = await run(runtime, "skilled", "俳句スタイルで、冬の朝について答えてください。")
+    assert any(isinstance(e, ToolUseEvent) and e.name == "skills" for e in events)
+    assert "詠み人: strands" in result_of(events).text
+
+
+async def test_mcp_tools_are_called(runtime: Runtime) -> None:
+    events = await run(runtime, "mcp-user", "12 と 34 を掛けた結果を教えてください。")
+    assert any(isinstance(e, ToolUseEvent) and e.name == "multiply" for e in events)
+    assert "408" in result_of(events).text
+
+
+async def test_structured_output(runtime: Runtime) -> None:
+    events = await run(runtime, "extractor", "山田花子（hanako@example.org、Beta 社）が料金について質問。")
+    result = result_of(events)
+    assert result.stop_reason == "structured_output"
+    assert result.structured_output and result.structured_output["name"] == "山田花子"
+
+
+async def test_turn_limit_stops_after_tool(runtime: Runtime) -> None:
+    events = await run(runtime, "limited", "サイコロを振ってください。")
+    assert result_of(events).stop_reason == "limit_turns"
+
+
+async def test_invocation_state_reaches_tools_and_full_results(runtime: Runtime) -> None:
+    events = await run(
+        runtime, "tenant-aware", "私はどのテナント？", invocation_state={"tenant": "acme"}, tool_result_detail="full"
+    )
+    tool_result = next(e for e in events if isinstance(e, ToolResultEvent))
+    assert tool_result.content == [{"text": "tenant=acme"}]
+    assert "acme" in result_of(events).text
