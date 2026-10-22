@@ -65,8 +65,7 @@ src = ["src", "tests", "tests_integ", "infra"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN"]
 # RUF001-003: 全角の括弧・句読点・記号を「曖昧な Unicode」として警告するルール。日本語の文字列・docstring・コメントでは誤検知になるため無効。
-# E501: 行長はコードについては ruff format が整えるので不要。コメント・docstring・文字列を特定文字数で強制改行させないために無効
-#       （日本語は文末や意味の区切りで改行する。CLAUDE.md のセマンティックラインブレイク）。
+# E501: コードの行長は ruff format が整える。コメント・docstring・文字列を特定文字数で強制改行させないために無効。
 ignore = ["ANN401", "RUF001", "RUF002", "RUF003", "E501"]
 
 [tool.ruff.lint.isort]
