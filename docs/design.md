@@ -600,7 +600,7 @@ curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
 - 観測性のために CloudWatch Transaction Search を有効化する（アカウント単位の 1 回限りの設定。スタック外の手順として README に記す）。
 - **Direct Code Deploy**（`AgentRuntimeArtifact.fromCodeAsset(...)`、`entrypoint=["opentelemetry-instrument", "main.py"]`）はコールドスタートとセッション生成レートで有利なため、依存が純 Python のみで 250 MB に収まる構成では選択肢にする。
   `uv pip install --python-platform aarch64-manylinux2014 --only-binary=:all:` で ARM64 向けにビルドする。第 2 フェーズで両方式を検証し、既定を決める。
-- Runtime V2（スナップショット方式、コールドスタート約 2 秒）は CDK/CloudFormation が `platformVersion` に未対応のため、現時点では採用しない。対応後に切り替える。
+- Runtime V2（スナップショット方式、コールドスタート約 2 秒）は CloudFormation（`PlatformVersion`）、CDK（`platformVersion: PlatformVersion.V2`）、Terraform（`platform_version`）のいずれも対応済み（開発者ガイドの「未対応」注記は古い）。本ランタイムは定義を起動時に読み込んで焼き込む設計で、V2 の「起動時の状態はスナップショットに凍結される」性質と整合する。最初の `/ping` が 120 秒以内に健全になること、環境変数の合計が 1.5〜2.5 KB に収まることを確認したうえで、フェーズ 2 で V2 を既定にする。
 - `@aws/agentcore` CLI（Node）は開発者のローカル検証（`agentcore dev`、`agentcore invoke`）に使ってもよいが、本番の IaC には使わない。
 
 ### 11.4 複数エージェントのデプロイ単位
@@ -617,22 +617,24 @@ CDK スタックは Runtime の一覧（名前、読む `runtime.toml`、環境�
 
 ### 11.5 定義の配置方式（焼き込み / マウント / S3 同期）
 
-ランタイムは `STRANDS_RUNTIME_CONFIG` が指す `runtime.toml` と、その `agents_dir` 配下を読むだけで、パスがイメージ内か外部かを区別しない。
-したがって定義の置き場所は運用方針として選べる。
+ランタイムは `STRANDS_RUNTIME_CONFIG` が指す `runtime.toml` と、その `agents_dir` 配下を**起動時に**読んで検証する。
+AgentCore Runtime の仕様（2026-10-22 調査、[付録 C](#付録-c-agentcore-runtime-のファイルシステムに関する調査結果)）を踏まえると、配置方式の選択肢は次のとおり。
 
-| 方式 | 構成 | 更新の反映 | 不変性 | 追加コード |
-|---|---|---|---|---|
-| **焼き込み（既定）** | `runtime.toml` と `agents/` をイメージに含める | イメージの再ビルドと再デプロイ（AgentCore では新バージョン） | 高い。Runtime のバージョン = 定義のスナップショット | なし |
-| **デプロイ差分のマウント** | 定義はイメージに焼き込み、Runtime ごとの小さな `runtime.toml`（`enabled_agents`、`[session]` など）だけをマウントして `STRANDS_RUNTIME_CONFIG` で指す | 差分ファイルの更新と再起動 | 定義は不変、公開範囲だけ外部 | なし |
-| **定義ディレクトリのマウント** | `runtime.toml` と `agents/` をボリュームに置き、ローカルは `-v`、AgentCore はファイルシステム設定（S3 Files / EFS のマウント。利用可否と上限はフェーズ 2 で確認） | ファイルの更新と再起動（AgentCore はセッション新規作成時に反映） | 低い。マウント先のパスにリリース ID を含めて運用で担保する | なし |
-| **S3 同期** | `agents_dir = "s3://bucket/prefix"` を受け付け、起動時に一時ディレクトリへ同期してから既存ローダーで読む | オブジェクトの更新と再起動 | prefix にリリース ID を含めれば保てる | 小（boto3 で list/get。`validate` も同じ経路で動かす） |
+| 方式 | 構成 | 更新の反映 | 不変性 | 起動時ロードとの相性 | 追加コード |
+|---|---|---|---|---|---|
+| **焼き込み（コンテナ）** | `runtime.toml` と `agents/` をイメージに含める | 再ビルドと再デプロイ（約 30 秒、V2 はスナップショット再作成で数分） | 高い。Runtime バージョン = 定義のスナップショット | 良い | なし |
+| **焼き込み（Direct Code Deploy）** | 同じ内容を zip にして S3 へ。`UpdateAgentRuntime` で新バージョン | **約 10 秒**（AWS の公表値）。バージョンは不変のまま | 高い | 良い | なし（CDK の `fromCodeAsset`） |
+| **デプロイ差分のマウント** | 定義は焼き込み、Runtime ごとの小さな `runtime.toml` だけを外に置く | — | 定義は不変 | **不可**。マウントは呼び出し時にしか接続されず、起動時に `runtime.toml` を読めない。差分ファイルも焼き込むか環境変数（`STRANDS_RUNTIME_CONFIG` でイメージ内の別ファイルを選ぶ）で表す | なし |
+| **定義ディレクトリのマウント（S3 Files / EFS）** | `agents/` をマウント先（`/mnt/<name>`）に置く | S3 の変更が数秒で見える（NFSv4.2、close-to-open 一貫性） | 低い。運用でパスにリリース ID を含める | **不可（現設計）**。起動時には空。最初の呼び出し時に読む遅延ロードへ変更すれば可能。VPC モード必須、実行ロールに `s3files:ClientMount` 等 | 中（遅延ロード、再読込、VPC 構成） |
+| **起動時 S3 同期** | `agents_dir = "s3://..."` を起動時に同期 | V1: 新規 microVM ごと。**V2: スナップショットに凍結されるため再デプロイまで変わらない** | V2 では焼き込みと同等 | V1 のみ意味がある | 小 |
+| **Configuration Bundles（AWS ネイティブ）** | プロンプトやモデル ID を制御プレーンの不変バンドルに置き、リクエストの `baggage` で版を指定。`BedrockAgentCoreContext.get_config_bundle()` で取得 | バンドルの新版発行。A/B テストは Gateway が注入 | 高い（版が不変） | 良い（リクエスト単位） | 中。TOML 定義の一部キーを上書きする統合層が必要 |
 
-方針は次のとおり。
+**判断**
 
-- **既定は焼き込み**。成果物とバージョンの対応が明確で、`validate` を CI で通した定義だけがデプロイされる。
-- **デプロイ差分のマウント**は、同じイメージから複数 Runtime を作るときの推奨形。環境変数で TOML の値を上書きしない（ADR-6）ため、差分はこの形で外に出す。
-- **定義ディレクトリのマウント**と **S3 同期**は、プロンプトの修正をイメージ再ビルドなしで反映したい開発フェーズや、定義を運用チームが管理するケース向けの任意構成。どちらを採るかは AgentCore のマウント機能の確認結果で決める（マウントが素直に使えればコード追加のない前者、使いにくければ後者を実装）。
-- 外部配置では「起動時に全定義を検証して失敗なら起動しない」という現在の挙動がそのまま安全弁になる。壊れた定義を置いても、新しいセッションの起動が失敗するだけで、既存セッションには影響しない。
+- **既定は焼き込み**。AgentCore 上で更新速度が課題になる場合は、コンテナではなく **Direct Code Deploy** を使う。これが「不変性を保ちつつ速く更新する」正解で、ランタイムの変更は要らない。
+- **マウント方式は採用しない**。起動時ロードと噛み合わず、遅延ロードへの変更は「起動時に全定義を検証して失敗なら起動しない」安全弁を失う。VPC 必須という運用コストも大きい。
+- **同じイメージから複数 Runtime を作る**ときは、Runtime ごとの `runtime.toml` を**すべてイメージに焼き込み**、`STRANDS_RUNTIME_CONFIG=/app/deploy/<name>/runtime.toml` で選ぶ。環境変数は小さなパス 1 つで、V2 の 1.5〜2.5 KB 制限にも収まる。
+- **Configuration Bundles** は、運用者がプロンプトやモデルをリクエスト単位で差し替える AWS ネイティブの経路として有望（クライアントではなく運用者の制御チャネルなので、ペイロードでの上書き禁止と矛盾しない）。TOML 定義のどのキーを上書き可能にするかの設計が必要で、フェーズ 3 の検討項目とする。
 
 ### 11.6 環境ごとの差分まとめ
 
@@ -703,8 +705,8 @@ print(result.text, result.structured_output)
 | フェーズ | 内容 | 完了条件 |
 |---|---|---|
 | 1（実装済み） | 定義フォーマット、ローダー、Factory（モデル・ツール・MCP・Skills・local/s3/agentcore_memory セッション・subagents・structured_output・limits・interventions・コンテキスト注入）、Invoker（イベント正規化、キャンセル、タイムアウト、同一セッション排他、base64 メディア、HITL 再開）、HTTP サーバー、CLI（`validate --mcp`/`list`/`run`/`serve`）、Dockerfile、`HttpClient`、`AgentCoreClient`、`tests_integ/`（実モデル） | ローカルで実モデル（OpenRouter）によりサブエージェント・Skills・MCP・構造化出力・limits・invocation_state・vended ツールを確認済み。Docker・AWS 上は未確認 |
-| 2 | CDK スタック（Runtime、ECR、ロール、Memory または S3）、`s3`/`agentcore_memory` セッションと `AgentCoreClient` の実環境検証、Lambda サンプル、観測性の確認、code zip の評価、定義の外部配置（マウント可否の確認、必要なら S3 同期） | AgentCore 上で Lambda から呼び出し、CloudWatch でトレースを確認できる |
-| 3 | 長期記憶（`[memory]`）、Graph/Swarm/A2A の `kind` 拡張、HITL（interrupt 再開）、`prompt.md` の動的コンテキスト注入 | 設計 §8 の拡張点のうち優先度の高いものが利用可能 |
+| 2 | CDK スタック（Runtime、ECR、ロール、Memory または S3）、`s3`/`agentcore_memory` セッションと `AgentCoreClient` の実環境検証、Lambda サンプル、観測性の確認、code zip の評価、Direct Code Deploy と Runtime V2 の採用判断 | AgentCore 上で Lambda から呼び出し、CloudWatch でトレースを確認できる |
+| 3 | 長期記憶（`[memory]`）、Graph/Swarm/A2A の `kind` 拡張、AgentCore Configuration Bundles による運用者向けのプロンプト・モデル差し替え | 設計 §8 の拡張点のうち優先度の高いものが利用可能 |
 
 ---
 
@@ -786,3 +788,21 @@ print(result.text, result.structured_output)
   - `bedrock-agentcore` SDK: https://github.com/aws/bedrock-agentcore-sdk-python
   - `@aws/agentcore` CLI: https://github.com/aws/agentcore-cli
   - 料金: https://aws.amazon.com/bedrock/agentcore/pricing/
+
+## 付録 C. AgentCore Runtime のファイルシステムに関する調査結果
+
+2026-10-22 時点。公式ドキュメントで確認できた事実（確認できなかった点は明記）。
+
+- `filesystemConfigurations` は Runtime あたり 0〜5 件。各要素は `sessionStorage { mountPath }`、`s3FilesAccessPoint { accessPointArn, mountPath }`、`efsAccessPoint { accessPointArn, mountPath }`、`capacityProviderVolume`（Instances 専用）のいずれか 1 つ。S3 Files は最大 2、EFS は最大 2、セッションストレージは最大 1。`mountPath` は `/mnt/<name>` の 1 階層のみ。読み取り専用の指定はなく、IAM（`ClientWrite` を付けない）かアクセスポイントの UID/GID で制御する。
+- **マウントは新しいセッション ID の最初の呼び出し時に接続され、初期化中は利用できない**（公式ガイドの明記）。接続は並列で各 30 秒、1 つでも失敗すると呼び出しは HTTP 424。
+- S3 Files はライブビュー（NFSv4.2、close-to-open 一貫性）。バケット側の変更は通常数秒で見え、ファイルシステム側の書き込みは約 60 秒でまとめて S3 へ書き出される。EFS も同様にライブ。
+- セッションストレージ（Preview）はセッション単位で空から始まり、14 日のアイドルと**Runtime のバージョン更新ごとに**リセットされる。定義の配置には不向き。
+- S3 Files / EFS マウントは **VPC モード必須**。TCP 2049、同一 VPC・同一アカウント、ランタイムのサブネットと重なる AZ にマウントターゲット、DNS 解決が必要。実行ロールには `s3files:ClientMount` / `s3files:ClientWrite` / `s3files:GetAccessPoint`（EFS は `elasticfilesystem:ClientMount` / `ClientWrite`）。
+- Runtime V2 はスナップショットを最初の健全な `/ping` 時点で取り、`app.run()` より前にモジュールスコープで行ったことはすべて凍結される。AWS は「再デプロイなしに変えるものを起動時に計算しない」ことを推奨。V2 とマウントの組み合わせについての明文はなく、マウントが呼び出し時接続である以上、起動時に読んだ内容は空か凍結になると推定（未確認）。
+- IaC: CloudFormation は `FilesystemConfigurations` と `PlatformVersion` に対応。CDK の L2 `Runtime` は `platformVersion` に対応するがファイルシステム設定は L2 に無く、L1 `CfnRuntime` が必要（推定）。Terraform は `filesystem_configuration` と `platform_version` に対応。
+- Direct Code Deploy は zip 250 MB（展開後 750 MB）まで。AWS ブログは更新を約 10 秒（コンテナは約 30 秒）と公表。`UpdateAgentRuntime` ごとに新バージョンが作られ `DEFAULT` エンドポイントが移る。V2 ではスナップショット再作成のため数分。
+- Configuration Bundles: Runtime ARN に紐づく不変の版付き key/value（最大 5 MB の JSON）。リクエストの W3C `baggage`（`aws.agentcore.configbundle_arn` / `aws.agentcore.configbundle_version`）で版を指定し、`BedrockAgentCoreContext.get_config_bundle()`（bedrock-agentcore 1.8 以降）で取得・キャッシュ。Strands では `BeforeModelCallEvent` フックでの適用が推奨されている。
+- 環境変数: 50 件まで、合計サイズは V1 で 4 KB、V2 は Direct Code Deploy 1.5 KB / コンテナ 2.5 KB（V1 水準へ引き上げ予定と明記）。
+- 価格: S3 Files / EFS マウントの AgentCore 固有の料金は見つからず（各サービスの通常料金と推定）。S3 Files / EFS マウントの GA/Preview 表記も確認できず。
+
+参照: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-filesystem-configurations.html 、https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_FilesystemConfiguration.html 、https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html 、https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/configuration-bundles.html 、https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/configuration-bundles-runtime.html 、https://aws.amazon.com/blogs/machine-learning/iterate-faster-with-amazon-bedrock-agentcore-runtime-direct-code-deployment 、https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files-performance.html
