@@ -615,7 +615,26 @@ curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
 CDK スタックは Runtime の一覧（名前、読む `runtime.toml`、環境変数、ライフサイクル設定）をパラメーター化し、単一 Runtime は要素 1 つの特殊形として扱う。
 エージェント単位に分けた場合、Runtime 間の連携は `subagents`（同じプロセス内で構築）ではなく A2A または `AgentCoreClient` 経由になる（[§8](#8-オーケストレーションとエージェント連携)）。
 
-### 11.5 環境ごとの差分まとめ
+### 11.5 定義の配置方式（焼き込み / マウント / S3 同期）
+
+ランタイムは `STRANDS_RUNTIME_CONFIG` が指す `runtime.toml` と、その `agents_dir` 配下を読むだけで、パスがイメージ内か外部かを区別しない。
+したがって定義の置き場所は運用方針として選べる。
+
+| 方式 | 構成 | 更新の反映 | 不変性 | 追加コード |
+|---|---|---|---|---|
+| **焼き込み（既定）** | `runtime.toml` と `agents/` をイメージに含める | イメージの再ビルドと再デプロイ（AgentCore では新バージョン） | 高い。Runtime のバージョン = 定義のスナップショット | なし |
+| **デプロイ差分のマウント** | 定義はイメージに焼き込み、Runtime ごとの小さな `runtime.toml`（`enabled_agents`、`[session]` など）だけをマウントして `STRANDS_RUNTIME_CONFIG` で指す | 差分ファイルの更新と再起動 | 定義は不変、公開範囲だけ外部 | なし |
+| **定義ディレクトリのマウント** | `runtime.toml` と `agents/` をボリュームに置き、ローカルは `-v`、AgentCore はファイルシステム設定（S3 Files / EFS のマウント。利用可否と上限はフェーズ 2 で確認） | ファイルの更新と再起動（AgentCore はセッション新規作成時に反映） | 低い。マウント先のパスにリリース ID を含めて運用で担保する | なし |
+| **S3 同期** | `agents_dir = "s3://bucket/prefix"` を受け付け、起動時に一時ディレクトリへ同期してから既存ローダーで読む | オブジェクトの更新と再起動 | prefix にリリース ID を含めれば保てる | 小（boto3 で list/get。`validate` も同じ経路で動かす） |
+
+方針は次のとおり。
+
+- **既定は焼き込み**。成果物とバージョンの対応が明確で、`validate` を CI で通した定義だけがデプロイされる。
+- **デプロイ差分のマウント**は、同じイメージから複数 Runtime を作るときの推奨形。環境変数で TOML の値を上書きしない（ADR-6）ため、差分はこの形で外に出す。
+- **定義ディレクトリのマウント**と **S3 同期**は、プロンプトの修正をイメージ再ビルドなしで反映したい開発フェーズや、定義を運用チームが管理するケース向けの任意構成。どちらを採るかは AgentCore のマウント機能の確認結果で決める（マウントが素直に使えればコード追加のない前者、使いにくければ後者を実装）。
+- 外部配置では「起動時に全定義を検証して失敗なら起動しない」という現在の挙動がそのまま安全弁になる。壊れた定義を置いても、新しいセッションの起動が失敗するだけで、既存セッションには影響しない。
+
+### 11.6 環境ごとの差分まとめ
 
 | 項目 | ローカル | Docker | AgentCore |
 |---|---|---|---|
@@ -684,7 +703,7 @@ print(result.text, result.structured_output)
 | フェーズ | 内容 | 完了条件 |
 |---|---|---|
 | 1（実装済み） | 定義フォーマット、ローダー、Factory（モデル・ツール・MCP・Skills・local/s3/agentcore_memory セッション・subagents・structured_output・limits・interventions・コンテキスト注入）、Invoker（イベント正規化、キャンセル、タイムアウト、同一セッション排他、base64 メディア、HITL 再開）、HTTP サーバー、CLI（`validate --mcp`/`list`/`run`/`serve`）、Dockerfile、`HttpClient`、`AgentCoreClient`、`tests_integ/`（実モデル） | ローカルで実モデル（OpenRouter）によりサブエージェント・Skills・MCP・構造化出力・limits・invocation_state・vended ツールを確認済み。Docker・AWS 上は未確認 |
-| 2 | CDK スタック（Runtime、ECR、ロール、Memory または S3）、`s3`/`agentcore_memory` セッションと `AgentCoreClient` の実環境検証、Lambda サンプル、観測性の確認、code zip の評価 | AgentCore 上で Lambda から呼び出し、CloudWatch でトレースを確認できる |
+| 2 | CDK スタック（Runtime、ECR、ロール、Memory または S3）、`s3`/`agentcore_memory` セッションと `AgentCoreClient` の実環境検証、Lambda サンプル、観測性の確認、code zip の評価、定義の外部配置（マウント可否の確認、必要なら S3 同期） | AgentCore 上で Lambda から呼び出し、CloudWatch でトレースを確認できる |
 | 3 | 長期記憶（`[memory]`）、Graph/Swarm/A2A の `kind` 拡張、HITL（interrupt 再開）、`prompt.md` の動的コンテキスト注入 | 設計 §8 の拡張点のうち優先度の高いものが利用可能 |
 
 ---
