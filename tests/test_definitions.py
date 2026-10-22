@@ -153,3 +153,17 @@ def test_nested_path_references_are_absolutized(tmp_path: Path) -> None:
     assert resolved.definition.structured_output is not None
     assert resolved.definition.structured_output.model == f"{directory / 'schemas.py'}:Answer"
     assert resolved.definition.model.module == f"{directory / 'fake_model.py'}:make_model"
+
+
+def test_enabled_agents_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agents = tmp_path / "agents"
+    write_agent(agents, "a")
+    write_agent(agents, "b")
+    monkeypatch.setenv("STRANDS_RUNTIME_ENABLED_AGENTS", "b")
+    config = load_runtime_config(write_runtime(tmp_path, 'enabled_agents = ["a"]'))
+
+    assert Registry.load(config, tmp_path).published == ["b"]
+
+    monkeypatch.setenv("STRANDS_RUNTIME_ENABLED_AGENTS", " , ")
+    with pytest.raises(DefinitionError, match="names no agents"):
+        load_runtime_config(write_runtime(tmp_path))

@@ -125,9 +125,13 @@ AgentCore Runtime へは同じイメージを ECR に置いてデプロイしま
 
 ## 環境変数
 
+一覧と説明は [.env.example](.env.example) にまとめています（`cp .env.example .env` して値を埋める）。
+ランタイム自身は `.env` を読まず、`uv run --env-file .env` や `docker run --env-file .env` で渡します。
+
 | 変数 | 用途 |
 |---|---|
 | `STRANDS_RUNTIME_CONFIG` | `runtime.toml` のパス（既定 `./runtime.toml`） |
+| `STRANDS_RUNTIME_ENABLED_AGENTS` | 公開エージェントをカンマ区切りで上書き（同じイメージから複数 Runtime を作るとき） |
 
 サーバーのログは標準エラー出力に加え、`runtime.toml` の `[server] log_file` を設定するとファイルにも書かれます（Python の警告も含む）。
 | `OPENROUTER_API_KEY` など | `[model] api_key_env` で名指しした変数 |
