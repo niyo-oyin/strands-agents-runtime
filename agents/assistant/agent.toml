@@ -1,0 +1,12 @@
+name = "assistant"
+description = "汎用アシスタント。質問に答え、必要なら現在時刻を調べる。"
+tools = ["./tools/current_time.py"]
+
+[model]
+effort = "low"
+
+[model.config]
+max_tokens = 4096
+
+[limits]
+turns = 20

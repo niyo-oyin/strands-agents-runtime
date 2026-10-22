@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "strands-agents-runtime"
+version = "0.1.0"
+description = "Declarative (TOML + Markdown) agent runtime on Strands Agents, for local, Docker and Amazon Bedrock AgentCore"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "strands-agents[otel]>=1.61,<2",
+    "strands-harness>=0.3.1,<0.4",
+    "bedrock-agentcore[strands-agents]>=1.24,<2",
+    "pydantic>=2.5,<3",
+    "httpx>=0.27",
+    "boto3>=1.40",
+]
+
+[project.optional-dependencies]
+anthropic = ["strands-agents[anthropic]"]
+openai = ["strands-agents[openai]"]
+gemini = ["strands-agents[gemini]"]
+ollama = ["strands-agents[ollama]"]
+litellm = ["strands-agents[litellm]"]
+a2a = ["strands-agents[a2a]"]
+cedar = ["strands-agents[cedar]"]
+agentcore-otel = ["aws-opentelemetry-distro>=0.18,<1"]
+
+[project.scripts]
+strands-runtime = "strands_runtime.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.24,<2",
+    "ruff>=0.14",
+    "mypy>=1.14",
+    "types-boto3>=1.40",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[[tool.uv.index]]
+url = "https://pypi.flatt.tech/simple/"
+default = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/strands_runtime"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["strands_runtime"]
+mypy_path = "src"
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["strands_harness.*", "bedrock_agentcore.*", "botocore.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

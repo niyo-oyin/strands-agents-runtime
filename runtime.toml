@@ -1,0 +1,13 @@
+[runtime]
+agents_dir = "./agents"
+default_agent = "assistant"
+
+[model]
+default_id = "bedrock/global.anthropic.claude-opus-5"
+
+[session]
+backend = "local"
+dir = "./.runtime/sessions"
+
+[server]
+port = 8080
