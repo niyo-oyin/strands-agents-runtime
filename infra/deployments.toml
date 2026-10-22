@@ -1,0 +1,17 @@
+# CDK スタックの宣言。1 つのイメージから Runtime を複数作れる。
+# デプロイ: uv run python -m infra.app（cloud assembly を cdk.out に出力）、または npx aws-cdk deploy
+[stack]
+name = "StrandsRuntime"
+
+[[runtime]]
+name = "assistant"                         # AgentRuntimeName（英数字と _、48 文字まで）
+config = "deploy/example/runtime.toml"    # イメージ内の同じパスを STRANDS_RUNTIME_CONFIG に設定
+platform_version = "V2"
+idle_timeout_seconds = 900
+max_lifetime_seconds = 28800
+
+[runtime.env]                              # 追加の環境変数（小さなものだけ。V2 は合計 2.5 KB）
+OTEL_SERVICE_NAME = "strands-runtime-assistant"
+
+[runtime.secrets]                          # 環境変数名 = Secrets Manager のシークレット名（デプロイ時に解決）
+OPENROUTER_API_KEY = "strands-runtime/openrouter"

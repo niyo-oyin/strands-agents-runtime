@@ -38,10 +38,17 @@ dev = [
     "ruff>=0.14",
     "mypy>=1.14",
     "types-boto3>=1.40",
+    "pre-commit>=4",
+    "moto>=5",
+    "strands-agents[openai]>=1.61.1",
+]
+infra = [
+    "aws-cdk-lib>=2.255",
+    "constructs>=10",
 ]
 
 [tool.uv]
-default-groups = ["dev"]
+default-groups = ["dev", "infra"]
 
 [[tool.uv.index]]
 url = "https://pypi.flatt.tech/simple/"
@@ -53,21 +60,26 @@ packages = ["src/strands_runtime"]
 [tool.ruff]
 line-length = 120
 target-version = "py313"
-src = ["src", "tests", "tests_integ"]
+src = ["src", "tests", "tests_integ", "infra"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN"]
-ignore = ["ANN401"]
+# RUF001-003: 全角の括弧・句読点・記号を「曖昧な Unicode」として警告するルール。日本語の文字列・docstring・コメントでは誤検知になるため無効。
+# E501: 行長はコードについては ruff format が整えるので不要。コメント・docstring・文字列を特定文字数で強制改行させないために無効
+#       （日本語は文末や意味の区切りで改行する。CLAUDE.md のセマンティックラインブレイク）。
+ignore = ["ANN401", "RUF001", "RUF002", "RUF003", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["strands_runtime", "tests", "infra"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
-# Live tests send Japanese prompts; full-width punctuation is intended there.
-"tests_integ/**" = ["ANN", "RUF001", "RUF002", "RUF003"]
+"tests_integ/**" = ["ANN"]
 
 [tool.mypy]
 python_version = "3.13"
 strict = true
-packages = ["strands_runtime"]
+packages = ["strands_runtime", "infra"]
 mypy_path = "src"
 warn_unreachable = true
 

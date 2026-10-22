@@ -23,6 +23,19 @@ src/strands_runtime/
   events.py             # サーバーとクライアントで共有するイベントスキーマ
 ```
 
+## 開発（ローカル CI）
+
+CI サービスがなくても同じ検査を手元で回せます。
+
+```bash
+make check      # ruff → mypy → pytest → validate（コミット前の一式）
+make hooks      # pre-commit を導入: コミット時に lint/型、プッシュ時に test/validate
+make integ      # 実モデルの結合テスト（.env の OPENROUTER_API_KEY が必要）
+make docker-build && make docker-run
+```
+
+`[session] backend = "s3"` は moto（S3 のプロセス内モック）で往復を検証しています（`tests/test_s3_session.py`）。実バケットでの確認はフェーズ 2。
+
 ## 使い方
 
 ```bash
@@ -127,7 +140,28 @@ curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' -
 - `runtime.toml` の `[server] port` はコマンドラインの `--port 8080` で上書きされます。`log_file` はコンテナ内の `/app/.runtime/server.log` です。
 - Bedrock を使う場合は `-e AWS_REGION=... -v ~/.aws:/home/runtime/.aws:ro` などで資格情報を渡します。
 
-AgentCore Runtime へは同じイメージを ECR に置いてデプロイします（CDK スタックはフェーズ 2 で追加予定）。
+## AgentCore へのデプロイ（CDK）
+
+`infra/deployments.toml` に Runtime を宣言し、CDK（Python）が同じイメージから Runtime を作ります。
+合成（`synth`）は AWS アカウントなしで動き、テンプレートはテストで検証しています。
+
+```toml
+# infra/deployments.toml
+[[runtime]]
+name = "assistant"
+config = "deploy/example/runtime.toml"     # Runtime ごとの runtime.toml（イメージに焼き込み、STRANDS_RUNTIME_CONFIG で選ぶ）
+platform_version = "V2"
+[runtime.secrets]
+OPENROUTER_API_KEY = "strands-runtime/openrouter"   # Secrets Manager のシークレット名。デプロイ時に解決
+```
+
+```bash
+make synth                      # cdk.out にテンプレートを出力（アカウント不要）
+npx aws-cdk deploy              # 実デプロイ（AWS アカウントと CDK bootstrap が必要）
+```
+
+スタックは、Runtime の `runtime.toml` が `backend = "s3"` なら S3 バケットを、`agentcore_memory` なら AgentCore Memory を作成し、
+環境変数（`SESSION_BUCKET` / `AGENTCORE_MEMORY_ID`）と実行ロールの権限（S3、Bedrock モデル呼び出し）を配線します。
 
 ## 環境変数
 

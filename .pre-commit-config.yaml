@@ -1,0 +1,34 @@
+# ローカル CI の入口。`make hooks` で導入。CI サービスを使う場合も同じコマンドを呼ぶ。
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format --check
+        entry: uv run ruff format --check src tests tests_integ
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: ruff
+        name: ruff check
+        entry: uv run ruff check src tests tests_integ
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: mypy
+        name: mypy --strict
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: validate
+        name: strands-runtime validate
+        entry: make validate
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

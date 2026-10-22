@@ -1,0 +1,7 @@
+{
+  "app": "uv run python -m infra.app",
+  "output": "cdk.out",
+  "context": {
+    "@aws-cdk/core:newStyleStackSynthesis": true
+  }
+}

@@ -1,0 +1,17 @@
+# AgentCore Runtime 向けの runtime.toml の例。イメージには deploy/ 配下がすべて焼き込まれ、
+# Runtime ごとに環境変数 STRANDS_RUNTIME_CONFIG=/app/deploy/<name>/runtime.toml で選ぶ。
+[runtime]
+agents_dir = "../../agents"
+default_agent = "assistant"
+# enabled_agents = ["assistant"]          # この Runtime が公開するエージェント
+
+[model]
+default_id = "bedrock/global.anthropic.claude-opus-5"
+
+[session]
+backend = "s3"
+bucket = "${SESSION_BUCKET}"              # CDK スタックが作成し環境変数で渡す
+prefix = "sessions/"
+
+[server]
+port = 8080

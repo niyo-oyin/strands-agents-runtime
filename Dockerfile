@@ -20,6 +20,7 @@ RUN uv sync --frozen --no-dev $(for e in $EXTRAS; do printf -- '--extra %s ' "$e
 # Agent definitions are part of the artifact; environment-specific values come from env vars.
 COPY runtime.toml ./
 COPY agents ./agents
+COPY deploy ./deploy
 
 RUN useradd --create-home --uid 1000 runtime && chown -R runtime:runtime /app
 USER runtime

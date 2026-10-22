@@ -595,6 +595,13 @@ curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
 **IaC は CDK（Python、`aws_cdk.aws_bedrockagentcore`）を正とし、`infra/` に置く。**
 理由は [ADR-4](#adr-4-デプロイは-cdk-を正とし-python-版-starter-toolkit-には依存しない) に記す。
 
+実装（`infra/`、アカウントなしで `synth` とテストまで確認済み）:
+
+- `infra/deployments.toml` で Runtime を宣言する（`name`、Runtime ごとの `runtime.toml` のパス、`platform_version`、ライフサイクル、追加の環境変数、Secrets Manager から解決するシークレット）。
+- `infra/stack.py` は 1 スタックに、共有イメージ（`AgentRuntimeArtifact.from_asset`、linux/arm64）、Runtime ごとの `Runtime`（HTTP、IAM 認証、PUBLIC ネットワーク、トレース有効）、`runtime.toml` の `[session] backend` に応じた S3 バケットまたは AgentCore Memory、実行ロールへの権限（S3、`bedrock:InvokeModel*`、Memory）を配線する。L2 コンストラクトは ECR・ログ・X-Ray・ワークロード ID の権限しか付けないため、モデル呼び出しはスタック側で足す。
+- シークレットは `SecretValue.secrets_manager(name).unsafe_unwrap()` による CloudFormation 動的参照で環境変数に渡す。テンプレートには `{{resolve:secretsmanager:...}}` が入り、値は入らない（実デプロイでの解決はフェーズ 2 で確認）。
+- `cdk.json` は `uv run python -m infra.app` を app に指定しており、`npx aws-cdk deploy` で CLI からも使える。`make synth` はアカウント不要で `cdk.out` を生成する。
+
 - `Runtime`（`AgentRuntimeArtifact.fromAsset("..")` で ARM64 イメージをビルドして ECR に配置）、`protocolConfiguration=HTTP`、`environmentVariables`、`lifecycleConfiguration`（アイドル・最長時間）、`requestHeaderConfiguration`（必要なら）、実行ロール。
 - セッションバックエンドが `agentcore_memory` のときは `Memory` リソースと戦略を同じスタックで作り、`AGENTCORE_MEMORY_ID` を環境変数で渡す。`s3` のときはバケットと `s3:GetObject/PutObject/ListBucket` 権限を付与する。
 - 観測性のために CloudWatch Transaction Search を有効化する（アカウント単位の 1 回限りの設定。スタック外の手順として README に記す）。
@@ -690,7 +697,16 @@ print(result.text, result.structured_output)
 | Lint / 型 | ruff、mypy（strict） |
 | テスト | pytest、pytest-asyncio |
 
-### 13.2 テスト方針
+### 13.2 ローカル CI
+
+CI サービスや AWS アカウントがなくても進められるよう、検査はすべて `make` の目標として定義し、CI を載せるときはそれを呼ぶだけにする。
+
+- `make check` = `ruff format --check` → `ruff check` → `mypy --strict` → `pytest` → `strands-runtime validate --mcp`（`runtime.toml` と `examples/feature-check`）。
+- `make hooks` で `pre-commit` を導入し、コミット時に lint と型、プッシュ時にテストと `validate` を強制する。設定は `.pre-commit-config.yaml` で版管理する。
+- `make integ` は実モデルの結合テスト（`.env` のキーが必要、無ければスキップ）。
+- S3 セッションバックエンドは `moto` のプロセス内モックで検証する（`tests/test_s3_session.py`）。MinIO は Docker Hub からの配布を終了し、LocalStack はライセンストークンが必須になったため、外部の S3 互換ストアには依存しない。実バケットでの確認はフェーズ 2。
+
+### 13.3 テスト方針
 
 外部から観測可能な振る舞いを検証する。
 
@@ -700,12 +716,12 @@ print(result.text, result.structured_output)
 - **クライアント**: SSE パーサーと boto3 レスポンスの解析を、記録済みレスポンスで検証する。
 - **結合テスト**（任意実行、`tests_integ/`）: 実モデル（Bedrock）と Docker を使い、ローカルコンテナに対して 1 往復する。
 
-### 13.3 ロードマップ
+### 13.4 ロードマップ
 
 | フェーズ | 内容 | 完了条件 |
 |---|---|---|
 | 1（実装済み） | 定義フォーマット、ローダー、Factory（モデル・ツール・MCP・Skills・local/s3/agentcore_memory セッション・subagents・structured_output・limits・interventions・コンテキスト注入）、Invoker（イベント正規化、キャンセル、タイムアウト、同一セッション排他、base64 メディア、HITL 再開）、HTTP サーバー、CLI（`validate --mcp`/`list`/`run`/`serve`）、Dockerfile、`HttpClient`、`AgentCoreClient`、`tests_integ/`（実モデル） | ローカルで実モデル（OpenRouter）によりサブエージェント・Skills・MCP・構造化出力・limits・invocation_state・vended ツールを確認済み。Docker・AWS 上は未確認 |
-| 2 | CDK スタック（Runtime、ECR、ロール、Memory または S3）、`s3`/`agentcore_memory` セッションと `AgentCoreClient` の実環境検証、Lambda サンプル、観測性の確認、code zip の評価、Direct Code Deploy と Runtime V2 の採用判断 | AgentCore 上で Lambda から呼び出し、CloudWatch でトレースを確認できる |
+| 2 | CDK スタック（実装済み、`synth` とテストまで。実デプロイは未実施）、`s3` セッション（moto で検証済み）/`agentcore_memory` セッションと `AgentCoreClient` の実環境検証、Lambda サンプル、観測性の確認、Direct Code Deploy の評価 | AgentCore 上で Lambda から呼び出し、CloudWatch でトレースを確認できる |
 | 3 | 長期記憶（`[memory]`）、Graph/Swarm/A2A の `kind` 拡張、AgentCore Configuration Bundles による運用者向けのプロンプト・モデル差し替え | 設計 §8 の拡張点のうち優先度の高いものが利用可能 |
 
 ---

@@ -12,3 +12,5 @@ tests_integ
 examples
 docs
 .DS_Store
+cdk.out
+infra
