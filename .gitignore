@@ -8,3 +8,4 @@ dist/
 .runtime/
 .strands/
 *.egg-info/
+.DS_Store
