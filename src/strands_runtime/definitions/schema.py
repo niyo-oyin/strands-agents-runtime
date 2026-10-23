@@ -159,7 +159,10 @@ class ModelSpec(_Strict):
 class ContextSpec(_Strict):
     """``[context]`` テーブル。``Agent(context_manager=...)`` と、各ターンへの一時的なコンテキスト注入。"""
 
-    manager: ContextManagerName | dict[str, Any] = "auto"
+    manager: ContextManagerName | dict[str, Any] = "off"
+    """Strands の文脈管理。既定の ``off`` は SDK 標準のスライディングウィンドウだけを使う。
+    ``auto`` は大きなツール結果の切り詰め・退避と使用率 85% での要約を行い、全エージェントに
+    ``retrieve_context`` ツールを足す。動作が定義から読み取りにくくなるので、必要な定義だけで有効にする。"""
     inject: list[NonBlankStr] = Field(default_factory=list)
     """ユーザーターンごとに注入する文（会話履歴には残らない）。
     組み込みは ``"datetime"`` と ``"actor"``。それ以外は ``(InjectionContext) -> str | None`` を返す呼び出し可能オブジェクトへの

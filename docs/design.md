@@ -221,7 +221,8 @@ disabled = false
 # mcp_servers = "mcp.json"               # テーブルの代わりにファイルを指すこともできる
 
 [context]
-manager = "auto"                         # auto|agentic|off（Strands の context_manager）
+manager = "off"                          # off|auto|agentic（Strands の context_manager）。auto は大きなツール結果の切り詰め・退避、
+                                         # 85% 到達時の要約（エージェント自身のモデルで実行）、retrieve_context ツールの追加を伴う
 inject = ["datetime", "actor"]           # 任意: 各ユーザーターンに注入する一時コンテキスト（履歴には残らない）
 timezone = "Asia/Tokyo"                  # datetime 注入のタイムゾーン
 
@@ -257,7 +258,7 @@ timeout_seconds = 120                    # ランタイムが強制する実時�
 | `skills` | list[str] | `["./skills"]`（存在時） | `AgentSkills(skills=[...])` を `plugins` に追加 |
 | `subagents` | list[str] | `[]` | 定義名を解決して構築した `Agent` を `tools` に追加 |
 | `mcp_servers` | table or path | `{}` | `MCPClient.load_servers(dict)` → `ToolProvider` として `tools` に追加 |
-| `context.manager` | enum or table | `"auto"` | `Agent(context_manager=)` |
+| `context.manager` | enum or table | `"off"` | `Agent(context_manager=)`。`auto` / `agentic` は `retrieve_context` ツールの追加と要約（自身のモデル）を伴うため、必要な定義だけで有効にする |
 | `context.inject` | list[str] | `[]` | SDK の `ContextInjector`。組み込みは `datetime`（`context.timezone` で時刻帯指定）と `actor`（`actor_id`）。それ以外はモジュール参照で `(InjectionContext) -> str` を指す |
 | `limits.timeout_seconds` | float | なし | ランタイムの監視タイマー。超過時は `cancel_signal` で穏やかに停止させ `stop_reason = "timeout"` の `result` を返す。猶予（15 秒）内に止まらなければ `error`（`Timeout`） |
 | `session` | table | `inherit` | [§6](#6-セッションとメモリ) |

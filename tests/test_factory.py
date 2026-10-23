@@ -22,6 +22,7 @@ def test_build_wires_prompt_tools_model_config_and_session(project: Path) -> Non
 
     assert agent.system_prompt == "You are a test agent."
     assert "echo" in agent.tool_names
+    assert "retrieve_context" not in agent.tool_names  # 文脈管理は既定で off
     assert isinstance(agent.model, ScriptedModel)
     assert agent.model.get_config()["max_tokens"] == 123
     assert isinstance(agent._session_manager, SnapshotSessionManager)
