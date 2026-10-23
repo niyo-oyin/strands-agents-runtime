@@ -65,24 +65,25 @@ OpenRouter や互換サーバーは落ちることがあり、フォールバッ
 
 Strands が集計する入出力トークン（キャッシュ読み書き含む）を、サブエージェント込みの合計とエージェント別内訳（使ったモデル、呼び出し回数）で `result.metrics` に載せ、同じ値と `actor_id` を OTel の現在のスパン属性に付ける。`model_failures` でフォールバックの発生も分かる。取れないプロバイダーの値は 0 のまま許容し、料金換算はしない。フォールバック候補ごとの内訳は Strands の `ModelRouter`（provisional）が served candidate を公開していないため未対応。
 
-**A3. ジョブと進捗の契約設計**（中、契約に影響するため早く決める）
+**A3. ジョブと進捗**（契約は設計済み 2026-10-23、実装はこれから）
 
-1 回の呼び出しが 1 時間以上走る可能性は否定できない。AgentCore の同期呼び出しは 15 分、ストリーミングでも 60 分が上限で、接続を保ち続ける設計は成り立たない。
-一方、AgentCore の HTTP 契約は `/invocations` と `/ping` だけなので、非同期は `/invocations` のペイロードで表現するしかない。
+1 回の実行が 1 時間以上走る可能性は否定できない。AgentCore の同期呼び出しは 15 分、ストリーミングでも 60 分が上限で、接続を保ち続ける設計は成り立たない。
+契約は設計文書 §7.6 と ADR-7 で確定した。要点:
 
-設計の骨子（詳細は設計文書 §7.6）:
+- ペイロードの `mode`（`run` / `job` / `status` / `follow` / `result` / `cancel`）だけで表し、エンドポイントは増やさない。
+- ジョブはサーバーが生成する `job_id` で識別し、状態は `running` / `cancelling` / `completed` / `input_required` / `cancelled` / `failed`。終端状態は変わらない。
+- 進捗と結果はセッションストレージのジャーナル（`jobs/{session_id}/{job_id}/`）に、同期ストリームと同じイベント型で粗い粒度（メッセージ単位の `text`、`tool_use` / `tool_result`、終端）に記録する。`tool_result_detail = "full"` ならツール結果の全文も記録する。`follow` は `after` の連番から再生し、実行中なら追従する。
+- 心拍（30 秒）で生存を示し、途絶えたジョブは観測時に `JobLost` で失敗に確定する。キャンセルはジャーナル経由で別レプリカにも届く。
+- 実行中は `/ping` を `HealthyBusy` にする。同一セッションの実行は 1 つだけ（409）で、`status` / `follow` / `result` / `cancel` は通す。
+- `[jobs]` でジャーナルの置き場と上限時間を設定し、`Storage` のない構成（`agentcore_memory` / `none`）では明示しない限り無効。
 
-- **ジョブ = リクエストを超えて生きる呼び出し**。`{"mode": "job"}` のような指定で受け付け、即座にジョブ ID（= `session_id` に紐づく）を返す。
-- 実行はプロセス内のバックグラウンドタスクで続け、`/ping` を `HealthyBusy` にしてセッション（AgentCore では microVM）を生かす。
-- **進捗と結果はセッションストレージに書く**。同じ `session_id` への後続呼び出し（`{"mode": "status"}` / `{"mode": "result"}`）で取り出す。ローカルでもプロセスが生きていれば同じ契約で動く。
-- 進捗の単位は既存のイベント（`tool_use`、`tool_result`、後述の `node` 系）をそのまま使い、同期ストリームと非同期ジョブで同じ語彙にする。
-- 同一セッションの同時呼び出しは今は 409 固定。`status` / `result` / キャンセルの呼び出しは例外として通す。
+実装の順序: ジャーナルと `job` / `status` / `result` → `follow` → `cancel` と心拍 → `HealthyBusy` と `[jobs]` 設定 → クライアントの `submit()` / `JobHandle`。
 
 **A4. マルチエージェントの `kind` と進捗イベント**（中、A3 の上に載せる）
 
 - Graph / Swarm を `kind = "graph" | "swarm"` で宣言する（設計文書 §8 の予約どおり）。`SnapshotSessionManager` が Graph / Swarm にも対応したため、セッション永続化は共通化できる。
 - Strands の `multiagent_node_start / node_stop / handoff` を `node_start` / `node_stop` / `handoff` イベントとして契約に加え、「フローのどの段階にいるか」を同期・非同期のどちらでも返す。
-- 現在の agents-as-tools でも、子の実行は `tool_use` / `tool_result` に畳み込まれて見えない。ネストした実行の見せ方（親子関係を示す `parent` 属性など）を A3 と同時に決める。
+- ネストした実行の見せ方は A3 で決めた（設計文書 §7.6.8）。全イベントに `agent` / `parent` を設け、`include_subagents = true` で子のイベントを流す。Graph / Swarm のノード内イベントは `parent = node_id` を持つ。
 - 動的な子生成（`make_subagent` の presets / authority）はその後。
 
 **A5. ツール呼び出しの制限**（小）
@@ -113,7 +114,7 @@ namespace = "{actor_id}"
 
 **A8. 運用の基礎**（必要になった順に）
 
-- グレースフルシャットダウン: SIGTERM で新規受付を止め、進行中の呼び出しに `cancel_signal` を立て、`Agent.shutdown()` と MCP クライアントの終了を待つ。
+- グレースフルシャットダウン: SIGTERM で新規受付を止め、進行中の呼び出しとジョブに `cancel_signal` を立て、`Agent.shutdown()` と MCP クライアントの終了を待つ。ジョブは `cancelled_by = "runtime"` で終端にする（設計文書 §7.6.5）。
 - `/ping` の `HealthyBusy`（A3 の前提）。
 - 監査ログ: ツール呼び出しと判定を 1 行 JSON で記録。
 - トレースの秘匿: `gen_ai_span_attributes_only` と span redaction を `[telemetry]` から選ぶ（送信先ではなく「何を送るか」の方針なので TOML に置く）。
@@ -154,7 +155,7 @@ namespace = "{actor_id}"
 ## 6. 推奨する着手順
 
 1. ~~A1 フォールバック + A2 トークン数~~（実装済み）。
-2. **A3 ジョブと進捗の契約設計**。実装の前に設計文書で契約を確定する。長時間実行とマルチエージェントの両方がここに依存する。
+2. **A3 ジョブと進捗**。契約は設計文書 §7.6 で確定済み。ジャーナルと `mode` から実装する。
 3. **A4 Graph / Swarm と進捗イベント**。A3 の契約の上に載せる。
 4. **A5 ツール制限、A6 長期記憶、A7 セッション保存先の拡張点、A8 運用の基礎**は要求が具体化した順に（ECS や Azure に載せる話が出たら A7 を先に）。
 5. AWS アカウント取得後に **B1 → B2 → B3 → B4 → B5**。

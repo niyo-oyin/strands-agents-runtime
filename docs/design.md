@@ -301,6 +301,10 @@ dir = "./.runtime/sessions"              # local のとき
 # memory_id = "${AGENTCORE_MEMORY_ID}"
 # retrieval = { "/preferences/{actorId}/" = { top_k = 5, relevance_score = 0.7 } }
 
+[jobs]
+storage = "inherit"                      # inherit|local|s3。ジョブのジャーナル置き場（§7.6.7）。inherit は [session] の local / s3 を使う
+max_duration_seconds = 28800             # ジョブ 1 件の上限（既定 8 時間）
+
 [server]
 port = 8080
 log_file = "./.runtime/server.log"       # 任意: 端末に加えてファイルにも出す（警告も含む）
@@ -474,6 +478,10 @@ AgentCore はセッション ID を 33 文字以上に制約するため、ク�
 | `invocation_state` | object | `{}` | ツールに渡す任意のコンテキスト（`ToolContext.invocation_state`）。保存されない |
 | `include_reasoning` | bool | `false` | モデルの推論差分を `reasoning` イベントとして流す（推論モデルでは量が多いため既定は無効） |
 | `tool_result_detail` | `"preview"` or `"full"` | `"preview"` | `"full"` で `tool_result` に結果の content block 全体（`content`）を含める |
+| `include_subagents` | bool | `false` | サブエージェント内のイベントを `agent` / `parent` 付きで流す（[§7.6.8](#768-ネストした実行の可視化)） |
+| `mode` | `"run"` / `"job"` / `"status"` / `"follow"` / `"result"` / `"cancel"` | `"run"` | `run` 以外はジョブの操作（[§7.6.2](#762-ペイロードの-mode)） |
+| `job_id` | str | セッションの最新ジョブ | `status` / `follow` / `result` / `cancel` の対象 |
+| `after` | int | `0` | `follow` の再生開始位置（この `seq` の次から） |
 
 `prompt` に content block の配列を渡す場合、`image` / `document` / `video` の `source.bytes` は base64 文字列で送る。ランタイムが bytes に復号して Strands に渡す。
 中断（`interrupt`）した会話は、同じ `session_id` で `prompt = [{"interruptResponse": {"interruptId": "...", "response": ...}}]` を送ると再開する。
@@ -496,6 +504,9 @@ Strands の生イベント（`stream_async` の dict）は量が多く、シリ�
 | `interrupt` | `interrupts`（HITL 再開用）| `stop_reason == "interrupt"` |
 | `result` | `stop_reason`, `text`, `structured_output`, `metrics`, `session_id` | `result` イベント |
 | `error` | `error_type`, `message` | 例外（Strands が `force_stop` の後に再送出する例外を 1 件の `error` にまとめる）。結果もエラーもなく終わった場合は `NoResult` |
+| `job` | `job_id`, `state`, `accepted_at`, `updated_at`, `finished_at`, `seq`, `last_event`, `stop_reason`, `cancelled_by`, `error_type` | ジョブの記録（[§7.6.3](#763-状態)）。`mode` が `job` / `status` / `cancel` の応答と、`result` の未完了時 |
+
+すべてのイベントは共通の任意フィールドとして `seq`（ジョブのジャーナル内の連番）、`ts`（記録時刻）、`agent`（発生させたエージェント名）、`parent`（囲んでいる親の `tool_use_id` またはノード ID）を持つ。同期ストリームのトップレベルのイベントではすべて `null` で、ジョブと `include_subagents` で値が入る（[§7.6](#76-長時間実行ジョブと進捗)）。
 
 `result.metrics` は呼び出し全体（サブエージェントを含むエージェントツリー）の合計で、`input_tokens` / `output_tokens` / `total_tokens` / `cache_read_tokens` / `cache_write_tokens`、`tool_calls`、`cycles`、`model_failures`（失敗してフォールバックした回数）を持ち、`agents` にエージェント名ごとの内訳（使ったモデル、呼び出し回数、トークン数）を載せる。
 Strands はエージェントオブジェクト単位でしか使用量を持たないため、ランタイムがツリー内の全エージェントにフックを付け、呼び出し前後の差分を名前ごとに集計する。同じ値は OpenTelemetry の現在のスパンにも `strands_runtime.usage.*` 属性として付ける。
@@ -512,16 +523,16 @@ Strands はエージェントオブジェクト単位でしか使用量を持た
 ### 7.3 非ストリーミングレスポンス
 
 `stream: false` のとき、`result` イベントと同じ構造の JSON を `application/json` で返す。
-同期応答は基盤側のタイムアウトに従う（AgentCore では 15 分、ロードバランサー配下ではそのアイドルタイムアウト）。長時間タスクはストリーミングを使い、それでも収まらないものは [§7.6](#76-長時間実行ジョブと進捗設計予定) のジョブで扱う。
+同期応答は基盤側のタイムアウトに従う（AgentCore では 15 分、ロードバランサー配下ではそのアイドルタイムアウト）。長時間タスクはストリーミングを使い、それでも収まらないものは [§7.6](#76-長時間実行ジョブと進捗) のジョブで扱う。
 
 ### 7.4 ヘルスチェック（`GET /ping`）
 
 `BedrockAgentCoreApp` の既定実装を使い、`{"status": "Healthy"}` を返す。
-長時間のバックグラウンド処理を導入する場合は `@app.async_task` で `HealthyBusy` を自動化する（現時点では不要）。
+ジョブ（[§7.6](#76-長時間実行ジョブと進捗)）の実行中は `add_async_task` / `complete_async_task` で `HealthyBusy` を返す。
 
 ### 7.5 エラー
 
-- 同じ `session_id` の呼び出しが同一プロセスで実行中: HTTP 409（AgentCore の `RetryableConflictException` と同じ扱い）。履歴の競合を避けるため直列化ではなく拒否する
+- 同じ `session_id` で実行（同期実行またはジョブ）が進行中: HTTP 409（AgentCore の `RetryableConflictException` と同じ扱い）。履歴の競合を避けるため直列化ではなく拒否する。ジョブの `status` / `follow` / `result` / `cancel` は通す（[§7.6.6](#766-排他と基盤ごとの挙動)）
 - クライアントが途中で切断した場合: ランタイムは `cancel_signal` を立て、エージェントは次の安全な地点で停止して履歴を保存する
 - 定義名不明、ペイロード不正: HTTP 400 と `{"error": ..., "details": ...}`
 - 実行時例外: ストリーミング中なら `error` イベント、非ストリーミングなら HTTP 500
@@ -529,29 +540,153 @@ Strands はエージェントオブジェクト単位でしか使用量を持た
 
 ---
 
-### 7.6 長時間実行（ジョブ）と進捗（設計予定）
+### 7.6 長時間実行（ジョブ）と進捗
 
-1 回の呼び出しが数十分から 1 時間以上走る可能性を考慮する。
+1 回の実行が数十分から 1 時間以上走る可能性を考慮する。
 どの基盤にも接続のタイムアウトがあり（AgentCore では同期 15 分・ストリーミング 60 分、ロードバランサーにはアイドルタイムアウト）、接続を保ち続ける前提は成り立たない。
-また本ランタイムの HTTP 契約は `/invocations` と `/ping` に限定しているため、非同期の操作もすべて `/invocations` のペイロードで表現する。
+本ランタイムの HTTP 契約は `/invocations` と `/ping` に限定しているため、非同期の操作もすべて `/invocations` のペイロードで表現する（[ADR-7](#adr-7-非同期実行はペイロードの-mode-で表しジョブの状態はセッションストレージを正とする)）。
 
-設計の骨子（未実装。ロードマップ A3 で契約を確定してから実装する）:
+契約の設計は 2026-10-23 に確定した。実装はロードマップ A3 として行う。
+先行事例（OpenAI Responses の background mode、LangGraph Platform の runs、A2A 1.0 の Task、MCP Tasks 拡張、Claude Managed Agents）に共通する最小の語彙、すなわち「サーバーが生成する推測困難な ID」「受付 / 実行中 / 入力待ち / 完了 / 失敗 / キャンセルの状態」「連番カーソルによるストリームの再開」「終端状態に結果を含める」「ベストエフォートで冪等なキャンセル」を採り、それ以外は足さない。
 
-| 要素 | 方針 |
+#### 7.6.1 用語
+
+| 用語 | 意味 |
 |---|---|
-| 受付 | ペイロードに `mode = "job"` を指定すると、ランタイムは実行をバックグラウンドタスクとして開始し、即座に `job` イベント（ジョブ ID = `session_id`、受付時刻）を返す |
-| 生存 | 実行中は `/ping` を `HealthyBusy` にする。AgentCore ではこれがアイドル終了を防ぐ（最長 8 時間）。他の基盤ではプロセスが生きている限り続き、スケールインから守るかどうかは基盤側の設定に従う |
-| 進捗と結果の保管 | 既存のセッションストレージ（local / s3 / AgentCore Memory）に、進捗イベントの列と最終結果を書く。プロセスが落ちても「どこまで進んだか」は残る |
-| 取り出し | 同じ `session_id` への後続呼び出し `mode = "status"`（進捗の要約と直近イベント）、`mode = "result"`（`result` または `error`）、`mode = "cancel"`（`cancel_signal`） |
-| 語彙 | 進捗は同期ストリームと同じイベント型（`tool_use`、`tool_result`、`node_start` / `node_stop` / `handoff`）を使い、クライアントが 2 種類の表現を持たなくて済むようにする |
-| 排他 | 同一セッションの同時呼び出しは引き続き 409。ただし `status` / `result` / `cancel` は例外として通す |
-| ネストの可視化 | サブエージェントや Graph / Swarm のノード実行を `parent`（親の `tool_use_id` またはノード ID）付きのイベントで表し、「フローのどの段階にいるか」を同期・非同期のどちらでも返せるようにする |
+| 呼び出し | `/invocations` への 1 リクエスト |
+| 実行 | エージェントが 1 つのプロンプトを処理し終えるまでの単位。同期実行（`mode = "run"`）では呼び出しと実行が一致する |
+| ジョブ | リクエストを超えて生きる実行。受け付けた呼び出しはすぐに返り、実行はサーバープロセス内のバックグラウンドタスクとして続く。`job_id`（サーバーが生成する UUIDv4）で識別し、1 つのセッションに属する |
+| ジャーナル | ジョブの進捗イベントと最終結果を順番に記録したもの。セッションストレージに置く |
 
-未決の論点:
+#### 7.6.2 ペイロードの `mode`
 
-- 結果の保持期間とサイズ上限（セッションストレージに置く以上、セッションの TTL に従うのが自然）。
-- プロセス再起動後の扱い。プロセス内のタスクは失われるため「中断」として記録し、再開はチェックポイント（Strands `checkpointing`）の採用可否とあわせて判断する。
-- `stream = true` の長時間実行（60 分未満）と `mode = "job"` の使い分けを、クライアントライブラリでどう見せるか。
+| `mode` | 役割 | 応答 |
+|---|---|---|
+| `run`（既定） | 同期実行。[§7.1](#71-リクエストpost-invocations)〜[§7.3](#73-非ストリーミングレスポンス) のとおり | SSE または JSON |
+| `job` | ジョブを受け付けて即座に返る。`prompt` と `agent`、`actor_id`、`invocation_state` は `run` と同じ意味を持つ | JSON の `job` イベント（受付直後の記録） |
+| `status` | ジョブの現在の記録 | JSON の `job` イベント |
+| `follow` | ジャーナルを `after` の次の `seq` から再生し、実行中ならそのまま終端まで追従する | SSE。終端イベント（`result` または `error`）で閉じる |
+| `result` | 終端イベントだけを取り出す | 終端なら `result` または `error` の JSON。実行中なら `job` イベント（`state` で判別する） |
+| `cancel` | 停止を要求する。冪等で、終端のジョブに対しては現在の記録を返すだけ | JSON の `job` イベント |
+
+`status` / `follow` / `result` / `cancel` は `session_id`（ヘッダーまたはペイロード）を必須とし、`job_id` を省略するとそのセッションの最新のジョブを指す。
+`job` モードでは `stream` と `include_reasoning` を無視する（ジャーナルに書く粒度は [§7.6.4](#764-ジャーナル) で固定する）。`tool_result_detail` と `include_subagents` は投入時の値がジャーナルの内容を決め、`follow` する側は記録されたものをそのまま受け取る。
+`job_id` が見つからなければ HTTP 404、ジョブ機能が無効な構成（[§7.6.7](#767-設定)）で `job` を指定したら HTTP 400 を返す。
+
+#### 7.6.3 状態
+
+```
+受付 ──▶ running ──▶ completed                 result（end_turn / max_tokens / timeout / limit_* / structured_output）
+                ├──▶ input_required            result（interrupt。interrupts を含む）
+                ├──▶ failed                    error（プロセス消失の JobLost を含む）
+                └──▶ cancelling ──▶ cancelled  result（cancelled）
+                                └──▶ failed    猶予内に止まらなかった
+```
+
+| `state` | 終端 | 意味 |
+|---|---|---|
+| `running` | | 実行中。`updated_at` が定期的に更新される |
+| `cancelling` | | 停止要求を受け、エージェントが次の安全な地点で止まるのを待っている |
+| `completed` | ○ | `result` イベントが記録された。`stop_reason` が `timeout` や `limit_turns` の場合もここに入る（部分的な回答を含む正常終了として扱う） |
+| `input_required` | ○ | 人の入力待ちで止まった（`result.stop_reason = "interrupt"`）。同じセッションに `interruptResponse` を送ると新しい実行として再開する。ジョブとしては終端 |
+| `cancelled` | ○ | `cancel` または基盤の停止要求で止まった（`result.stop_reason = "cancelled"`）。`cancelled_by` が `client` か `runtime` かを示す |
+| `failed` | ○ | `error` イベントが記録された。プロセスが消えて進捗が止まったジョブは `error_type = "JobLost"` で失敗として確定する |
+
+終端状態は変わらない。キャンセルは協調的で、`cancelling` のまま猶予（同期実行のタイムアウトと同じ 15 秒）を過ぎた場合はストリームを打ち切って `failed` にする。
+
+`job` イベントの形:
+
+```json
+{
+  "type": "job",
+  "job_id": "6f1c...", "session_id": "0d1b...", "agent": "researcher",
+  "state": "running",
+  "accepted_at": "2026-10-23T09:00:00Z", "updated_at": "2026-10-23T09:12:30Z", "finished_at": null,
+  "seq": 17,
+  "last_event": { "seq": 17, "ts": "2026-10-23T09:12:30Z", "type": "tool_use", "summary": "http_request" },
+  "stop_reason": null, "cancelled_by": null, "error_type": null
+}
+```
+
+`seq` は記録済みの最後の連番、`last_event` は最後に記録したイベントの要約（種類と、ツール名または本文の先頭）。進捗の全文は `follow` で取る。
+
+#### 7.6.4 ジャーナル
+
+ジャーナルはセッションストレージ（Strands の `Storage`。`local` / `s3`、将来は A7 のモジュール参照）に置く。キー配置は次のとおり。
+
+```
+jobs/{session_id}/latest                      # 最新の job_id
+jobs/{session_id}/{job_id}/job.json           # job イベントと同じ内容（状態、心拍、カーソル）
+jobs/{session_id}/{job_id}/events/{seq:06d}   # イベント 1 件ずつ。seq は 1 から始まる連番
+```
+
+記録するイベントは同期ストリームと同じ型を使い、粒度だけを粗くする。差分（`text` / `reasoning` の逐次チャンク）は記録しない。
+
+| 記録するイベント | 粒度 |
+|---|---|
+| `start` | 受付時 |
+| `text` | アシスタントのメッセージ 1 件につき 1 件（全文）。同期ストリームの差分と同じ型だが、ジョブでは 1 メッセージ分をまとめる |
+| `tool_use` / `tool_result` | ツール呼び出しごと。`tool_result` は既定では `preview` のみで、投入時に `tool_result_detail = "full"` なら `content` も記録する。全文は会話履歴にも入るので容量は重複するが、ジョブの途中でツールの生成物を取り出せる |
+| `interrupt` | 人の入力待ちで止まったとき |
+| `node_start` / `node_stop` / `handoff` | Graph / Swarm のノード遷移（A4 で追加） |
+| `result` / `error` | 終端。1 件だけ |
+
+記録されるイベントには `seq`（ジョブ内の連番）と `ts`（記録時刻）が付く。同期ストリームのイベントではこの 2 つは `null` のままにする。
+S3 では 1 イベント 1 オブジェクトになるが、記録対象が粗いため件数は実行中のツール呼び出し数の 2 倍程度に収まる。局所的な書き込み失敗はジョブを止めず、警告ログに出して次のイベントで `job.json` を更新する。
+
+#### 7.6.5 生存監視とキャンセルの伝播
+
+- 実行中のプロセスは `job.json` の `updated_at` を、イベントの記録時と、少なくとも 30 秒ごと（心拍）に更新する。
+- `status` / `follow` / `result` は、`state = running` のまま `updated_at` が 90 秒（心拍の 3 倍）以上古く、かつそのジョブが自プロセスにない場合、`error_type = "JobLost"` の `error` イベントを書いて `failed` に確定する。プロセス再起動後に走査はせず、観測された時点で確定する（Temporal の heartbeat timeout と同じ考え方）。
+- `cancel` は、ジョブが自プロセスにあれば直ちに `cancel_signal` を立て、同時に `job.json` に `cancel_requested_at` を書く。別のプロセス（複数レプリカの ECS など）で動いているジョブは、心拍のたびに `job.json` を読み直して `cancel_requested_at` を見つけ、自分で `cancel_signal` を立てる。伝播の遅れは最大で心拍 1 回分。
+- グレースフルシャットダウン（A8）では、実行中の全ジョブに `cancel_signal` を立てて猶予まで待つ。こうして止まったジョブは `cancelled_by = "runtime"` になり、クライアントは再投入すべき停止だと区別できる。
+
+#### 7.6.6 排他と基盤ごとの挙動
+
+- **排他**: 1 つのセッションで同時に進む実行は 1 つだけ。実行中のセッションに `run` または `job` を送ると HTTP 409。`status` / `follow` / `result` / `cancel` は通す。実行中かどうかはプロセス内の記録に加えて、ジャーナルの最新ジョブが `running` / `cancelling` で心拍が新しいことでも判定するため、別レプリカで走るジョブとの競合も 409 になる。同期実行はジャーナルを持たないので、同期実行同士の排他はプロセス内に限る（現状どおり）。キューイング（LangGraph の `enqueue`）は採用しない。
+- **`/ping`**: ジョブの受付時に `BedrockAgentCoreApp.add_async_task`、終端で `complete_async_task` を呼び、実行中は `HealthyBusy` を返す。AgentCore ではこれがアイドル終了を止め、上限は `maxLifetime`（microVM は最長 8 時間、Instances 計算タイプは最長 14 日）。他の基盤では情報としての意味しかなく、スケールインからの保護は基盤側の設定（ECS のタスクスケールイン保護など）で行う。
+- **AgentCore**: 同じセッション ID の後続呼び出しは `HealthyBusy` 中でも同じ microVM に届く（409 が返るのはセッションのプロビジョニング中とティアダウン中だけ）。microVM が終了すると実行中のジョブは通知なく失われ、次の呼び出しは新しい microVM に届く。ジャーナルがストレージにあるため、その新しい microVM での `status` が `JobLost` を確定する。
+- **複数レプリカ**: `status` / `result` / `follow` はジャーナルだけで答えられるので、どのレプリカが受けてもよい。`follow` はジョブを持つプロセスではプロセス内の通知で即時に、それ以外ではジャーナルの追従（1 秒間隔）で流す。
+- **ローカル**: 1 プロセスが複数セッションのジョブを同時に持つ。契約は同じ。
+
+#### 7.6.7 設定
+
+```toml
+[jobs]
+storage = "inherit"            # inherit | local | s3。inherit は [session] の local / s3 をそのまま使う
+# dir = "./.runtime/jobs"      # local のとき
+# bucket = "..."; prefix = ""  # s3 のとき
+max_duration_seconds = 28800   # ジョブ 1 件の上限。エージェントの limits.timeout_seconds が短ければそちらが効く
+```
+
+- `[session] backend` が `agentcore_memory` または `none` の構成では、ジャーナルを置く `Storage` がないため `storage` を明示しない限りジョブ機能は無効（`mode = "job"` は HTTP 400）。
+- `max_duration_seconds` は基盤の上限がないローカルや ECS でジョブが際限なく走るのを防ぐための安全弁で、同期実行の監視タイマーをそのまま使う。既定は AgentCore の microVM 上限に合わせた 8 時間。
+- 結果の保持期間はセッションと同じ（A8 のセッション TTL と掃除コマンドで `jobs/` も対象にする）。
+
+#### 7.6.8 ネストした実行の可視化
+
+サブエージェント（agents-as-tools）の中で起きたツール呼び出しやメッセージは、現在は親の `tool_use` / `tool_result` に畳み込まれて見えない。Strands は子エージェントのイベントを `AgentAsToolStreamEvent`（親の `tool_use` 付き）で親ストリームに転送するため、追加の仕組みなしに取り出せる。
+
+- 全イベントに任意の `agent`（発生させたエージェント名）と `parent`（それを囲む親の `tool_use_id`。Graph / Swarm ではノード ID）を設ける。トップレベルのイベントでは `parent` は `null`。
+- ペイロードの `include_subagents = true` で、子の `text`（メッセージ単位）/ `tool_use` / `tool_result` / `interrupt` を `agent` と `parent` 付きで流す。既定は `false` で、親の `text` を連結しているクライアントに子の本文が混ざらないようにする。`run` と `job` の両方で同じ意味を持つ。
+- Graph / Swarm（A4）では `node_start` / `node_stop` / `handoff` を同じ語彙に加え、ノード内のイベントは `parent = node_id` を持つ。
+
+#### 7.6.9 同期実行との使い分け
+
+| 状況 | 使うもの |
+|---|---|
+| クライアントが接続を保てて、所要時間が基盤のストリーミング上限より十分短い | `run`（SSE） |
+| 接続を保てない、切断しても追従し直したい、所要時間が読めない | `job` + `follow` |
+| 応答を人が待たない（バッチ、夜間処理） | `job` + 後からの `result` |
+
+クライアントライブラリでは `submit()` が `job` を送って `JobHandle` を返し、`handle.follow(after=...)` が `follow`、`handle.result(wait=True)` が終端までの追従、`handle.cancel()` が `cancel` に対応する（[§12](#12-クライアント)）。
+
+#### 7.6.10 採用しなかったもの
+
+- **プロセス再起動後の自動再開**: Strands の checkpoint（experimental）は「エージェントが自発的に一時停止する」仕組みで、障害からの復旧手段ではない。会話履歴は `SessionManager` が終端まで保存しているので、`JobLost` になったジョブは同じセッションに「続けて」と投入すれば続きから進む。自動化は要求が出てから判断する。
+- **コールバック（Webhook / SNS）**: 基盤ごとに配送手段が異なり、契約が `/invocations` の外に出る。必要なら基盤側（EventBridge など）で `result` をポーリングする側に置く。
+- **同一セッションのキューイング**: 409 で拒否し、クライアントに再試行させる方が履歴の整合を保ちやすい。
+- **SSE の `id:` / `Last-Event-ID` による再開**: AgentCore がクライアントのヘッダーを素通ししないため、カーソルはペイロードの `after` に置く。
 
 ## 8. オーケストレーションとエージェント連携
 
@@ -570,6 +705,7 @@ Strands が提供する他の方式に対しては、定義フォーマットに
 
 `agent.toml` に `kind`（既定 `"agent"`）を予約し、Graph/Swarm は別 `kind` として同じ Registry と呼び出し契約で扱う。
 `Invoker` は `AgentBase`/`MultiAgentBase` のどちらも `stream_async` を持つことに依存し、イベント正規化で `multiagent_*` イベントを扱う。
+ネストした実行（サブエージェント、Graph / Swarm のノード）の中のイベントは、どの方式でも `agent` と `parent` で親子関係を表す（[§7.6.8](#768-ネストした実行の可視化)）。
 
 ---
 
@@ -588,6 +724,7 @@ Strands が提供する他の方式に対しては、定義フォーマットに
 - 構造化ログは標準 `logging` で出し、JSON フォーマッタは導入しない（ADOT のログ連携と CloudWatch で十分）。
 - `serve` はランタイム・Strands・uvicorn・Python の警告をすべてルートロガーに集約し、`[server] log_file` が設定されていれば同じ内容をファイルにも書く。端末を見られない作業者（別の運用者、エージェント、CI）がサーバーの観測結果を読めるようにするためのもの。
 - OpenAI 互換モデルは SDK がコンテキスト長を知らないため、`[model.config] context_window_limit` を定義側で指定する（未指定なら SDK が 200,000 と仮定して警告する）。
+- ジョブ（[§7.6](#76-長時間実行ジョブと進捗)）では、実行の `invoke_agent` スパンは受け付けたリクエストのスパンより長く生きる。受付・`status` / `follow` / `cancel` の各リクエストのスパンには `strands_runtime.job.id` を付け、実行側のルートスパンにも同じ属性を付けて、可視化ツールで突き合わせられるようにする。
 
 ---
 
@@ -637,7 +774,7 @@ Docker イメージをそのまま 1 サービスとして動かす。契約が 
 | セッション ID | ヘッダー `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` は任意。ペイロードの `session_id` でよい |
 | セッションの保存先 | `s3`（AWS）または `local` に永続ボリューム。複数レプリカで同じセッションを扱う場合は永続化が前提になる。S3 以外のオブジェクトストア（Azure Blob など）は Strands の `Storage` 実装をモジュール参照で差し込めるようにする（ロードマップ） |
 | 同一セッションの同時実行 | 409 による排他はプロセス内だけ。レプリカをまたぐ競合を避けるには、ロードバランサーで `session_id` によるスティッキールーティングを行うか、1 セッションが 1 レプリカに閉じる構成にする |
-| タイムアウト | ロードバランサーのアイドルタイムアウトを SSE に合わせて延ばす。それでも足りないものは [§7.6](#76-長時間実行ジョブと進捗設計予定) のジョブ |
+| タイムアウト | ロードバランサーのアイドルタイムアウトを SSE に合わせて延ばす。それでも足りないものは [§7.6](#76-長時間実行ジョブと進捗) のジョブ |
 | 認証 | ランタイムは実装しない。ALB / Front Door / API Gateway などの前段で行う |
 | 観測性 | 標準の `OTEL_*` 環境変数でコレクターに送る。`opentelemetry-instrument` は汎用の OpenTelemetry 配布でよく、ADOT は必須ではない |
 | アーキテクチャ | 既定は linux/arm64。x86_64 の基盤ではビルド時に `--platform` を変えるだけ |
@@ -728,7 +865,18 @@ result = client.invoke(agent="support-bot", prompt="...", session_id=sid)   # st
 print(result.text, result.structured_output)
 ```
 
-- 2 つのクライアントは同じインターフェース（`stream()` / `invoke()`）と同じイベント型を持つ。
+ジョブ（[§7.6](#76-長時間実行ジョブと進捗)）は `submit()` で投入し、返る `JobHandle` で操作する。別プロセスからは `client.job(session_id, job_id)` で同じハンドルを得る。
+
+```python
+job = client.submit(agent="researcher", prompt="...", session_id=sid)   # mode="job"。すぐ返る
+print(job.status().state)                                                # mode="status"
+for event in job.follow(after=last_seq):                                 # mode="follow"。切断したら after を進めて呼び直す
+    last_seq = event.seq
+result = job.result(wait=True)                                           # 終端まで追従して result / error を返す
+job.cancel()                                                             # mode="cancel"。冪等
+```
+
+- 2 つのクライアントは同じインターフェース（`stream()` / `invoke()` / `submit()`）と同じイベント型を持つ。
 - `AgentCoreClient` は `invoke_agent_runtime(agentRuntimeArn, runtimeSessionId, payload, qualifier="DEFAULT")` を呼び、`text/event-stream` なら `iter_lines()` で `data:` 行を解析する。`424 RuntimeClientError` や `409 RetryableConflictException` は型付き例外にする（後者は boto3 がリトライする）。
 - `qualifier` でエンドポイント（バージョン固定）を選べるようにする。
 - クライアントは依存を最小にする（`boto3` と `pydantic` のみ）。Lambda でのパッケージサイズを抑えるため、extras `strands-agents-runtime[client]` を用意するか、別配布にするかは [§14](#14-未決事項) で確認する。
@@ -835,6 +983,12 @@ CI サービスや AWS アカウントがなくても進められるよう、検
 - **背景**: 「同じイメージから Runtime を複数作る」構成では公開範囲（`enabled_agents`）がデプロイごとに変わる。一度 `STRANDS_RUNTIME_ENABLED_AGENTS` による上書きを実装したが、`runtime.toml` の中でこのキーだけが環境変数で差し替わる例外になった。
 - **決定**: 環境変数が決めるのは「どの `runtime.toml` を読むか」（`STRANDS_RUNTIME_CONFIG`）だけとし、値の上書きは持たない。デプロイごとの差分はファイルを分けて表す。シークレットや環境依存の値は、TOML が `${VAR}` で変数名を参照する形に限る。
 - **理由**: 設定ファイルは「何を動かすか」、環境変数は「どこで・誰の資格で動かすか」という線引きを一貫させる。上書き可能なキーが 1 つあると「あのキーも」と増え、構成の所在が分散する。ファイルを分ける方式は追加コードなしで既に成立しており、`validate` の対象にもなる。
+
+### ADR-7: 非同期実行はペイロードの `mode` で表し、ジョブの状態はセッションストレージを正とする
+
+- **背景**: 1 時間を超える実行は、どの基盤でも接続を保ったままでは完走できない。一方、本ランタイムの HTTP 契約は `/invocations` と `/ping` だけで、AgentCore ではこれ以外のルートもクライアントのヘッダーも使えない。プロセス内の状態は microVM の終了やレプリカの入れ替えで消える。
+- **決定**: ジョブの受付・状態・追従・結果・キャンセルをすべて `/invocations` のペイロードの `mode` で表す。進捗と結果はセッションストレージのジャーナルに書き、プロセス内のタスクは「実行する場所」にすぎないものとする。進捗の語彙は同期ストリームのイベント型をそのまま使い、連番 `seq` で再開できるようにする。再起動後の自動再開、コールバック配送、同一セッションのキューイングは持たない。
+- **理由**: エンドポイントを増やさなければ、ローカル・コンテナ基盤・AgentCore で同じクライアントが動く。ジャーナルをストレージに置けば `status` / `result` / `follow` はどのプロセスでも答えられ、プロセスが消えたジョブも心拍の途絶から確定できる。先行事例（OpenAI background mode、LangGraph runs、A2A Task、MCP Tasks）が共有する最小の語彙に合わせることで、将来 A2A の Task に対応づけるときも状態の変換だけで済む。
 
 ## 付録 B. 参照
 
