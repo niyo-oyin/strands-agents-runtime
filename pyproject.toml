@@ -40,7 +40,7 @@ dev = [
     "types-boto3>=1.40",
     "pre-commit>=4",
     "moto>=5",
-    "strands-agents[openai]>=1.61.1",
+    "strands-agents[cedar,openai]>=1.61.1",
 ]
 infra = [
     "aws-cdk-lib>=2.255",

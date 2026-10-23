@@ -10,7 +10,7 @@ help:
 	@echo "make lint         ruff format --check / ruff check"
 	@echo "make typecheck    mypy --strict"
 	@echo "make test         pytest（偽モデル、外部接続なし）"
-	@echo "make validate     strands-runtime validate --mcp（runtime.toml と examples）"
+	@echo "make validate     strands-runtime validate --mcp（runtime.toml、examples/feature-check、examples/reference）"
 	@echo "make integ        実モデルの結合テスト（.env の OPENROUTER_API_KEY が必要）"
 	@echo "make docker-build linux/arm64 イメージをビルド（IMAGE=$(IMAGE)）"
 	@echo "make docker-run   .env を渡してローカル実行（OTel 無効、8080）"
@@ -34,6 +34,7 @@ test:
 validate:
 	OPENROUTER_API_KEY=$${OPENROUTER_API_KEY:-validate-only} $(UV) strands-runtime -c $(CONFIG) validate
 	OPENROUTER_API_KEY=$${OPENROUTER_API_KEY:-validate-only} $(UV) strands-runtime -c examples/feature-check/runtime.toml validate --mcp
+	OPENROUTER_API_KEY=$${OPENROUTER_API_KEY:-validate-only} $(UV) strands-runtime -c examples/reference/runtime.toml validate --mcp
 
 integ:
 	$(UV) --env-file .env pytest tests_integ -q

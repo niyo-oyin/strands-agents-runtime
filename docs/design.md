@@ -238,6 +238,8 @@ output_tokens = 32000
 timeout_seconds = 120                    # ランタイムが強制する実時間の上限
 ```
 
+全項目を説明コメント付きで書いた定義は `examples/reference/`（`runtime.toml` と `agents/reference/agent.toml`）にあり、`make check` の `validate --mcp` の対象にして陳腐化を防ぐ。
+
 #### スキーマ（主要キー）
 
 | キー | 型 | 既定 | Strands への対応 |

@@ -135,6 +135,12 @@ base_url = "http://localhost:8000/v1"
 api_key_env = "LOCAL_LLM_API_KEY"      # 値ではなく変数名。OPENAI_API_KEY は公式側に残せる
 ```
 
+## 設定項目のリファレンス（examples/reference）
+
+`runtime.toml` と `agent.toml` の全設定項目を、説明コメント付きで書いた定義が [examples/reference](examples/reference) にある。
+補助ファイル（ツール、スキル、Cedar ポリシー、Plugin、注入関数、構造化出力のスキーマ、MCP サーバー）も揃えてあり、`make check` の `validate --mcp` が毎回通す。
+設定を追加するときは、スキーマ（`definitions/schema.py`）とこの定義を一緒に更新する。
+
 ## 機能確認用の定義（examples/feature-check）
 
 サブエージェント、Agent Skills、MCP、構造化出力、`limits`、`invocation_state`、SDK 同梱ツール、別モデルを 1 つずつ試せる定義を置いています。

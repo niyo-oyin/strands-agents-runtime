@@ -221,6 +221,21 @@ async def test_context_injection_adds_datetime_and_actor(tmp_path: Path) -> None
     assert "<current_datetime>" in seen and "+09:00" in seen and "<actor_id>user-42</actor_id>" in seen
 
 
+async def test_context_injection_resolves_file_references_relative_to_the_agent(tmp_path: Path) -> None:
+    agent_dir = write_agent(
+        tmp_path / "agents", "ctx", toml_extra='[context]\ninject = ["./injectors.py:render_turn"]\n'
+    )
+    (agent_dir / "injectors.py").write_text(
+        "def render_turn(context):\n"
+        "    return f\"<turn>{sum(1 for m in context.messages if m.get('role') == 'user')}</turn>\"\n",
+        encoding="utf-8",
+    )
+    runtime = Runtime.load(write_runtime(tmp_path))
+    fakes.script(fakes.text("ok"))
+    await collect(runtime, InvocationRequest(agent="ctx", prompt="hi"))
+    assert "<turn>1</turn>" in str(fakes.seen_messages()[0])
+
+
 async def test_usage_is_aggregated_across_subagents(tmp_path: Path) -> None:
     agents = tmp_path / "agents"
     write_agent(agents, "parent", toml_extra='subagents = ["child"]\n', with_tool=False)

@@ -156,6 +156,10 @@ class ModelSpec(_Strict):
         return resolved
 
 
+BUILTIN_INJECTORS = frozenset({"datetime", "actor"})
+"""``[context] inject`` の組み込み項目。これ以外はコード参照として扱う。"""
+
+
 class ContextSpec(_Strict):
     """``[context]`` テーブル。``Agent(context_manager=...)`` と、各ターンへの一時的なコンテキスト注入。"""
 

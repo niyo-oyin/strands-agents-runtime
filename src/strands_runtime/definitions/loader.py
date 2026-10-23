@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from strands_runtime.definitions.schema import AgentDefinition, RuntimeConfig
+from strands_runtime.definitions.schema import BUILTIN_INJECTORS, AgentDefinition, RuntimeConfig
 from strands_runtime.errors import DefinitionError
 
 AGENT_FILE = "agent.toml"
@@ -107,7 +107,7 @@ class ResolvedAgent:
 
     パスはすべて絶対パス。
     下のリスト項目は定義の相対参照（ツール・スキル・プラグイン）を解決したもので、
-    定義の内側にある参照（``model.module``、``structured_output.model``）は ``definition`` の中で絶対化済み。
+    定義の内側にある参照（``model.module``、``structured_output.model``、``context.inject``）は ``definition`` の中で絶対化済み。
     ``mcp_servers`` は常にマッピング（``mcp.json`` 指定の場合は読み込み済み）。
     """
 
@@ -176,7 +176,7 @@ def load_agent(directory: Path) -> ResolvedAgent:
     ]
     plugins = [_resolve_path_reference(p, directory) if is_path_reference(p) else p for p in definition.plugins]
 
-    # 定義の内側にあるコード参照（model.module、structured_output.model）も、同じ規則で絶対化してから差し替える。
+    # 定義の内側にあるコード参照（model.module、structured_output.model、context.inject）も、同じ規則で絶対化してから差し替える。
     updates: dict[str, Any] = {}
     if definition.model.module and is_path_reference(definition.model.module):
         module = _resolve_path_reference(definition.model.module, directory)
@@ -184,6 +184,12 @@ def load_agent(directory: Path) -> ResolvedAgent:
     if definition.structured_output and is_path_reference(definition.structured_output.model):
         model_ref = _resolve_path_reference(definition.structured_output.model, directory)
         updates["structured_output"] = definition.structured_output.model_copy(update={"model": model_ref})
+    inject = [
+        _resolve_path_reference(i, directory) if i not in BUILTIN_INJECTORS and is_path_reference(i) else i
+        for i in definition.context.inject
+    ]
+    if inject != definition.context.inject:
+        updates["context"] = definition.context.model_copy(update={"inject": inject})
     if updates:
         definition = definition.model_copy(update=updates)
 

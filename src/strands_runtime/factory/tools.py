@@ -62,6 +62,7 @@ def build_context_injectors(agent: ResolvedAgent, session: SessionContext) -> li
     spec = agent.definition.context
     plugins: list[Plugin] = []
     for entry in spec.inject:
+        # 組み込み名は BUILTIN_INJECTORS と一致させる（ローダーと validate が同じ集合でコード参照と区別する）。
         if entry == "datetime":
             zone = ZoneInfo(spec.timezone)
 

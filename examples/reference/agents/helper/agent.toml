@@ -1,0 +1,9 @@
+# 最小の定義。name と prompt.md があれば動く。
+# [model] を省略すると runtime.toml の [model] default_id を使い、[session] は runtime.toml を継承する。
+name = "helper"
+description = "reference から subagents として呼ばれる補助エージェント"
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

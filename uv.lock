@@ -3976,7 +3976,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
-    { name = "strands-agents", extra = ["openai"] },
+    { name = "strands-agents", extra = ["cedar", "openai"] },
     { name = "types-boto3" },
 ]
 infra = [
@@ -4011,7 +4011,7 @@ dev = [
     { name = "pytest", specifier = ">=8,<9" },
     { name = "pytest-asyncio", specifier = ">=0.24,<2" },
     { name = "ruff", specifier = ">=0.14" },
-    { name = "strands-agents", extras = ["openai"], specifier = ">=1.61.1" },
+    { name = "strands-agents", extras = ["cedar", "openai"], specifier = ">=1.61.1" },
     { name = "types-boto3", specifier = ">=1.40" },
 ]
 infra = [

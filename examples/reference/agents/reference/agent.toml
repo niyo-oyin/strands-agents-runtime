@@ -1,0 +1,96 @@
+# agent.toml の全設定項目（リファレンス）。
+#
+# - ディレクトリ名と name は一致させる。name はツール名（subagents）や agent_id にも使うので英小文字・数字・_・- に限る。
+# - 相対パスはこのディレクトリが基準。コード参照は "pkg.module:attr" か "./file.py:attr"。
+# - トップレベルのキー（tools、skills、subagents など）は、最初のテーブル見出し（[model] など）より前に書く。
+#   後ろに書くと TOML の規則でそのテーブルの一部になる（[model.config] に紛れ込んだ場合は起動時に助言付きで拒否される）。
+# - 文字列値の中の ${VAR} は環境変数に展開される。API キーの値は書かず、環境変数の名前だけを書く。
+
+name = "reference"
+description = "全設定項目を書いたリファレンス定義"      # list コマンドとサブエージェントのツール説明に使う
+kind = "agent"                                         # 現在は "agent" のみ（graph / swarm は予約）
+prompt = "prompt.md"                                   # システムプロンプトの Markdown（既定 prompt.md）
+
+# ツール。ファイル（@tool 関数を含む .py）か、モジュール参照。
+tools = [
+  "./tools/hello.py",                                  # このディレクトリのファイル
+  "strands.vended_tools:http_request",                 # SDK 同梱のツール
+]
+
+# スキル（SKILL.md を持つディレクトリ、または SKILL.md の URL）。
+# 省略時は ./skills があればそれを使う。空リスト [] で明示的に無効化する。
+skills = ["./skills"]
+
+# サブエージェント（agents-as-tools）。同じ agents_dir にある定義名。親が LLM でルーティングする。
+subagents = ["helper"]
+
+# 介入ハンドラー。.cedar は Cedar ポリシー（ツール呼び出しの許可・拒否）、それ以外は InterventionHandler へのコード参照。
+# Cedar を使うには extras の cedar（strands-agents-runtime[cedar]、Docker では EXTRAS に cedar）が要る。validate が未導入を検出する。
+interventions = ["policy.cedar"]
+
+# Strands の Plugin（フックとツールの束）へのコード参照。インスタンス、引数なしで作れるクラス、引数なしのファクトリのいずれか。
+plugins = ["./plugins.py:AuditPlugin"]
+
+# MCP サーバー。mcpServers 形式のテーブル。代わりに JSON ファイルのパス（mcp_servers = "mcp.json"）も書ける。
+[mcp_servers.demo]
+command = "uv"
+args = ["run", "python", "mcp_server.py"]
+cwd = "."                                              # 省略可。このディレクトリ基準
+# env = { LOG_LEVEL = "info" }                         # 省略可。サーバーに渡す環境変数
+# [mcp_servers.remote]
+# url = "https://mcp.example.com/mcp"                  # HTTP（Streamable HTTP）のサーバー
+# headers = { Authorization = "Bearer ${MCP_TOKEN}" }
+
+[model]
+# id と module はどちらか一方。両方省略すると runtime.toml の [model] default_id を使う。
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"  # "provider/model-id"
+# module = "./model.py:make_model"                     # Model（または ModelRouter）を返す関数へのコード参照
+effort = "auto"                                        # auto | off | minimal | low | medium | high | xhigh | max（推論の深さ。対応モデルのみ）
+caching = true                                         # プロンプトキャッシュ（既定 true）
+base_url = "https://openrouter.ai/api/v1"              # openai-chat 専用。省略時は OPENAI_BASE_URL
+api_key_env = "OPENROUTER_API_KEY"                     # openai-chat 専用。キーを持つ環境変数の名前（省略時は OPENAI_API_KEY）
+# 呼び出し失敗時に順に試す候補（ModelRouter + FallbackStrategy）。
+# 文字列は id だけの指定で、effort・caching・接続先・キー・config を主モデルから引き継ぐ。テーブルで個別に上書きできる。
+fallbacks = [
+  "openai-chat/xiaomi/mimo-v2.6-pro",
+  { id = "openai-chat/gpt-5.5-mini", base_url = "https://api.openai.com/v1", api_key_env = "OPENAI_API_KEY", effort = "low" },
+]
+
+[model.cache]
+# プロンプトキャッシュの調整（strands.models.CacheConfig にそのまま渡す）。caching = true が前提。
+strategy = "auto"                                      # auto | anthropic
+ttl = "1h"                                             # キャッシュの保持時間（"5m" / "1h" など、対応プロバイダーのみ）
+system_prompt_ttl = true                               # システムプロンプトをキャッシュ対象にする（true / false / "1h"）
+tools_ttl = true                                       # ツール定義をキャッシュ対象にする
+# cache_key = "shared-prefix"                          # 明示的なキャッシュキー（対応プロバイダーのみ）
+
+[model.config]
+# Model.update_config にそのまま渡す。キー名はプロバイダーの Model クラスに従う。
+context_window_limit = 128000                          # OpenAI 互換モデルでは SDK が知らないので指定する（使用率の見積もりに使う）
+# max_tokens = 4096
+# temperature = 0.2
+# params = { top_p = 0.9 }                             # openai-chat: Chat Completions のパラメータ
+
+[context]
+manager = "off"                                        # off | auto | agentic。auto / agentic は大きなツール結果の切り詰めと
+                                                       # 使用率 85% での要約（自身のモデルで実行）を行い、retrieve_context ツールを足す
+inject = [                                             # 各ユーザーターンに一時的に注入する文（履歴には残らない）
+  "datetime",                                          # 組み込み: 現在時刻
+  "actor",                                             # 組み込み: ペイロードの actor_id
+  "./injectors.py:render_turn",                        # 独自: (InjectionContext) -> str | None
+]
+timezone = "Asia/Tokyo"                                # datetime 注入のタイムゾーン（IANA 名、既定 UTC）
+
+[session]
+backend = "inherit"                                    # inherit（既定。runtime.toml の [session] を使う）| local | s3 | agentcore_memory | none
+# 上書きするときのキーは runtime.toml の [session] と同じ（dir / bucket / prefix / region / memory_id / retrieval）。
+
+[structured_output]
+model = "./schemas.py:Answer"                          # pydantic モデルへのコード参照。result.structured_output に入り、stop_reason は "structured_output"
+
+[limits]
+# 毎回の呼び出しに適用する上限。超過すると部分的な結果で止まり、stop_reason にその理由が入る。
+turns = 20                                             # モデル呼び出し回数（limit_turns）
+output_tokens = 8000                                   # 出力トークンの合計（limit_output_tokens）
+total_tokens = 200000                                  # 入出力トークンの合計（limit_total_tokens）
+timeout_seconds = 600                                  # 実時間の上限（秒）。ランタイムが監視し、超過時は停止を要求して stop_reason = "timeout"

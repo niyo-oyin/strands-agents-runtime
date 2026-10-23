@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from strands_runtime.definitions.loader import ResolvedAgent, is_path_reference
+from strands_runtime.definitions.schema import BUILTIN_INJECTORS
 from strands_runtime.errors import StrandsRuntimeError
 from strands_runtime.events import ErrorEvent, ResultEvent, TextEvent
 from strands_runtime.factory.references import load_attribute
@@ -91,10 +92,19 @@ def _check_references(agent: ResolvedAgent) -> list[str]:
         refs.append(d.model.module)
     if d.structured_output:
         refs.append(d.structured_output.model)
+    refs.extend(i for i in d.context.inject if i not in BUILTIN_INJECTORS)
     for ref in refs:
         try:
             load_attribute(ref)
         except StrandsRuntimeError as exc:
+            problems.append(f"{d.name}: {exc}")
+    # Cedar ポリシーは extras の [cedar]（cedarpy）が要る。入っていなければ最初の呼び出しではなく、ここで気づけるようにする。
+    if any(i.endswith(".cedar") for i in agent.interventions):
+        try:
+            import strands.vended_interventions as interventions
+
+            interventions.CedarAuthorization  # noqa: B018 - 遅延 import を発火させるための参照
+        except ImportError as exc:
             problems.append(f"{d.name}: {exc}")
     # ツールのモジュール参照は ``pkg.module`` だけ（``:func`` なし）もあり得るので、モジュール部分の import だけ試す。
     for tool in agent.tools:

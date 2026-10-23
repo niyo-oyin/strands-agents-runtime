@@ -1,0 +1,60 @@
+# runtime.toml の全設定項目（リファレンス）。
+#
+# - 1 つのデプロイ（ローカル起動、コンテナ、AgentCore の Runtime）が読む設定。どれを読むかは
+#   `STRANDS_RUNTIME_CONFIG`（省略時は ./runtime.toml）で選ぶ。環境変数で個々の値は上書きしない。
+# - 相対パスはこのファイルがあるディレクトリが基準。
+# - 文字列値の中の ${VAR} / ${VAR:-default} は環境変数に展開される（未設定でデフォルトもなければ起動時エラー）。
+# - 未知のキーは起動時エラーになる（綴り間違いの検出のため）。
+# - このファイルは `strands-runtime -c examples/reference/runtime.toml validate` が通る状態を保つ。
+
+[runtime]
+agents_dir = "./agents"                  # エージェント定義の置き場。直下の各ディレクトリが 1 エージェント
+default_agent = "reference"              # ペイロードの agent 省略時に使う名前（省略可）
+# enabled_agents = ["reference"]         # 公開するエージェントを絞る（省略時は agents_dir 配下の全定義）。
+                                         # subagents で参照される定義は、公開しなくても読み込まれる
+max_subagent_depth = 3                   # subagents の入れ子の深さの上限（1〜10）
+
+[model]
+# [model] を持たない（id も module も書かない）エージェントが使う既定のモデル ID。
+# 形式は "provider/model-id"。provider は bedrock / anthropic / openai / openai-chat など（strands-harness の表に従う）。
+default_id = "bedrock/global.anthropic.claude-opus-5"
+
+[session]
+# 会話履歴（短期記憶）の保存先。agent.toml の [session] backend = "inherit"（既定）がこれを使う。
+# runtime.toml では "inherit" は書けない。
+backend = "local"                        # local | s3 | agentcore_memory | none
+dir = "./.runtime/sessions"              # local のとき。省略時は ./.runtime/sessions
+
+# backend = "s3"
+# bucket = "${SESSION_BUCKET}"           # 必須。バケット名は環境依存なので環境変数で与える
+# prefix = "prod/"                       # 省略可。キーの先頭に付ける
+# region = "ap-northeast-1"              # 省略時は boto3 の既定
+
+# backend = "agentcore_memory"           # AgentCore Memory（短期記憶 + 戦略による長期記憶）。actor_id が名前空間になる
+# memory_id = "${AGENTCORE_MEMORY_ID}"   # 必須
+# region = "us-east-1"
+# [session.retrieval."/preferences/{actorId}/"]   # 名前空間ごとの長期記憶の取り込み（省略可）
+# top_k = 5                              # 取り込む件数（1〜1000、既定 10）
+# relevance_score = 0.7                  # 関連度の下限（0〜1、既定 0.2）
+# strategy_id = "pref-strategy"          # 戦略 ID（省略可）
+
+# backend = "none"                       # 履歴を保存しない（ワンショット呼び出し向け）
+
+[jobs]
+# mode = "job" の実行（リクエストを超えて生きる実行）の進捗と結果を書くジャーナル。
+storage = "inherit"                      # inherit | local | s3。inherit は [session] が local / s3 ならその Storage を使う。
+                                         # [session] が agentcore_memory / none のときは、ここで local / s3 を明示しない限りジョブは無効
+# dir = "./.runtime/jobs"                # storage = "local" のとき
+# bucket = "${JOBS_BUCKET}"              # storage = "s3" のとき必須
+# prefix = ""
+# region = "ap-northeast-1"
+max_duration_seconds = 28800             # ジョブ 1 件の上限（秒）。エージェントの [limits] timeout_seconds が短ければそちらが効く
+
+[server]
+# host = "0.0.0.0"                       # 省略時: コンテナ内なら 0.0.0.0、それ以外は 127.0.0.1
+port = 8080                              # AgentCore はコンテナ側の 8080 を前提にする
+log_file = "./.runtime/server.log"       # 省略可。標準エラー出力に加えてファイルにも出す（警告を含む）
+
+# [telemetry]
+# トレースの送信先は OpenTelemetry 標準の環境変数（OTEL_TRACES_EXPORTER、OTEL_EXPORTER_OTLP_ENDPOINT など）で
+# 制御する。ここには設定を置かない（.env.example を参照）。
