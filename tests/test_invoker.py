@@ -219,3 +219,40 @@ async def test_context_injection_adds_datetime_and_actor(tmp_path: Path) -> None
     await collect(runtime, InvocationRequest(agent="ctx", prompt="hi", actor_id="user-42"))
     seen = str(fakes.seen_messages()[0])
     assert "<current_datetime>" in seen and "+09:00" in seen and "<actor_id>user-42</actor_id>" in seen
+
+
+async def test_usage_is_aggregated_across_subagents(tmp_path: Path) -> None:
+    agents = tmp_path / "agents"
+    write_agent(agents, "parent", toml_extra='subagents = ["child"]\n', with_tool=False)
+    write_agent(agents, "child", with_tool=False)
+    runtime = Runtime.load(write_runtime(tmp_path))
+    # parent asks child (one model call in the child), then answers: 3 model calls of 15 tokens each.
+    fakes.script(fakes.tool_use("child", {"input": "hello"}), fakes.text("child says hi"), fakes.text("done"))
+
+    result = await runtime.invoker.invoke(InvocationRequest(agent="parent", prompt="go", session_id="usage-1"))
+
+    assert isinstance(result, ResultEvent)
+    assert result.metrics.total_tokens == 45 and result.metrics.input_tokens == 30
+    assert set(result.metrics.agents) == {"parent", "child"}
+    assert result.metrics.agents["child"].invocations == 1 and result.metrics.agents["child"].total_tokens == 15
+    assert result.metrics.agents["parent"].total_tokens == 30
+    assert result.metrics.agents["parent"].model == "scripted/fake"
+    assert result.metrics.model_failures == 0
+
+
+async def test_fallback_model_takes_over_when_primary_fails(tmp_path: Path) -> None:
+    write_agent(
+        tmp_path / "agents",
+        "a",
+        with_tool=False,
+        model_table='[model]\nmodule = "tests.fakes:make_failing_model"\nfallbacks = [{ module = "tests.fakes:make_model" }]\n',
+    )
+    runtime = Runtime.load(write_runtime(tmp_path))
+    fakes.script(fakes.text("from the fallback"))
+
+    result = await runtime.invoker.invoke(InvocationRequest(agent="a", prompt="hi", session_id="fb-1"))
+
+    assert isinstance(result, ResultEvent), result
+    assert result.text == "from the fallback"
+    assert result.metrics.model_failures >= 1
+    assert result.metrics.agents["a"].model.startswith("router(")

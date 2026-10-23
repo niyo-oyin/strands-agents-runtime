@@ -117,3 +117,48 @@ def test_openai_chat_base_url_requires_that_provider(tmp_path: Path) -> None:
     write_agent(tmp_path / "agents", "a", model_table='[model]\nid = "openai/gpt-x"\nbase_url = "http://x"\n')
     with pytest.raises(DefinitionError, match="base_url"):
         Runtime.load(write_runtime(tmp_path))
+
+
+def test_fallbacks_build_a_model_router_with_shared_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from strands.models import ModelRouter
+    from strands.models.openai import OpenAIModel
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k1")
+    monkeypatch.setenv("OTHER_KEY", "k2")
+    write_agent(
+        tmp_path / "agents",
+        "a",
+        model_table=(
+            '[model]\nid = "openai-chat/primary"\nbase_url = "http://localhost:9/v1"\napi_key_env = "OPENROUTER_API_KEY"\n'
+            'fallbacks = ["openai-chat/second", { id = "openai-chat/third", base_url = "http://other:9/v1", api_key_env = "OTHER_KEY" }]\n'
+            '[model.cache]\nttl = "1h"\ntools_ttl = true\n'
+            "[model.config]\ncontext_window_limit = 32000\n"
+        ),
+    )
+    runtime = Runtime.load(write_runtime(tmp_path))
+
+    agent = runtime.factory.build("a", SESSION)
+
+    # Agent registers the router as a plugin and exposes the default model on ``.model``.
+    router = agent._model_router
+    assert isinstance(router, ModelRouter) and isinstance(agent.model, OpenAIModel)
+    models = [c.model for c in router.candidates]
+    assert [m.get_config()["model_id"] for m in models] == ["primary", "second", "third"]  # type: ignore[union-attr]
+    assert all(isinstance(m, OpenAIModel) for m in models)
+    # A plain-string fallback inherits endpoint, key and config; a table overrides them.
+    assert models[1].client_args == {"base_url": "http://localhost:9/v1", "api_key": "k1"}  # type: ignore[attr-defined]
+    assert models[2].client_args == {"base_url": "http://other:9/v1", "api_key": "k2"}  # type: ignore[attr-defined]
+    for m in models:
+        config = m.get_config()  # type: ignore[union-attr]
+        assert config["cache_config"].ttl == "1h" and config["cache_config"].tools_ttl is True
+        assert config["context_window_limit"] == 32000
+
+
+def test_cache_requires_caching(tmp_path: Path) -> None:
+    write_agent(
+        tmp_path / "agents",
+        "a",
+        model_table='[model]\nid = "openai-chat/m"\ncaching = false\n[model.cache]\nttl = "1h"\n',
+    )
+    with pytest.raises(DefinitionError, match="caching = true"):
+        Runtime.load(write_runtime(tmp_path))

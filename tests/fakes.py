@@ -56,9 +56,42 @@ def make_model() -> ScriptedModel:
     return ScriptedModel()
 
 
+def make_failing_model() -> FailingModel:
+    return FailingModel()
+
+
+class FailingModel(Model):
+    """Every call raises, so a ``[model] fallbacks`` router has to move on."""
+
+    def __init__(self) -> None:
+        self.config: dict[str, Any] = {"model_id": "failing/primary", "context_window_limit": 200_000}
+
+    def update_config(self, **model_config: Any) -> None:
+        self.config.update(model_config)
+
+    def get_config(self) -> dict[str, Any]:
+        return self.config
+
+    async def structured_output(
+        self, output_model: type[BaseModel], prompt: Messages, system_prompt: str | None = None, **kwargs: Any
+    ) -> AsyncGenerator[dict[str, Any]]:
+        raise RuntimeError("primary model is down")
+        yield {}  # pragma: no cover - makes this an async generator
+
+    async def stream(
+        self,
+        messages: Messages,
+        tool_specs: list[ToolSpec] | None = None,
+        system_prompt: str | None = None,
+        **kwargs: Any,
+    ) -> AsyncGenerator[dict[str, Any]]:
+        raise RuntimeError("primary model is down")
+        yield {}  # pragma: no cover - makes this an async generator
+
+
 class ScriptedModel(Model):
     def __init__(self) -> None:
-        self.config: dict[str, Any] = {"context_window_limit": 200_000}
+        self.config: dict[str, Any] = {"model_id": "scripted/fake", "context_window_limit": 200_000}
 
     def update_config(self, **model_config: Any) -> None:
         self.config.update(model_config)

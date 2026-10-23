@@ -33,12 +33,47 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+def _check_openai_chat_only(obj: ModelCandidate | ModelSpec, prefix: str) -> None:
+    for key in ("base_url", "api_key_env"):
+        if getattr(obj, key) is not None and obj.id is not None and not obj.id.startswith("openai-chat/"):
+            raise ValueError(f"{prefix}{key} is only valid with an 'openai-chat/<model>' id")
+
+
+class ModelCandidate(_Strict):
+    """One entry of ``[model] fallbacks``. Unset fields inherit the primary model's values."""
+
+    id: NonBlankStr | None = None
+    module: NonBlankStr | None = None
+    effort: Effort | None = None
+    base_url: NonBlankStr | None = None
+    api_key_env: NonBlankStr | None = None
+    config: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _one_of(self) -> ModelCandidate:
+        if (self.id is None) == (self.module is None):
+            raise ValueError("a fallback needs exactly one of id or module")
+        _check_openai_chat_only(self, "fallbacks[].")
+        return self
+
+
+class CacheSpec(_Strict):
+    """``[model.cache]`` table → ``strands.models.CacheConfig`` (prompt caching); keys are the SDK's."""
+
+    strategy: Literal["auto", "anthropic"] = "auto"
+    ttl: NonBlankStr | None = None
+    system_prompt_ttl: bool | NonBlankStr = True
+    cache_key: NonBlankStr | bool | None = None
+    tools_ttl: bool | NonBlankStr | None = None
+
+
 class ModelSpec(_Strict):
     """``[model]`` table.
 
     ``id`` is a ``"provider/model-id"`` string resolved by ``strands_harness.models.resolve_model``;
     ``module`` is a module reference to a factory returning a ``strands.models.Model`` or ``ModelRouter``
     for anything the provider table cannot express. ``config`` is passed verbatim to ``Model.update_config``.
+    ``fallbacks`` turns the model into a ``ModelRouter`` that switches candidates when a call fails.
     """
 
     id: NonBlankStr | None = None
@@ -54,14 +89,19 @@ class ModelSpec(_Strict):
     appears in TOML, only the variable name.
     """
     config: dict[str, Any] = Field(default_factory=dict)
+    fallbacks: list[NonBlankStr | ModelCandidate] = Field(default_factory=list)
+    """Models tried, in order, when the previous one fails (``ModelRouter`` + ``FallbackStrategy``).
+    A plain string is an ``id`` that inherits effort, caching, endpoint, key and config from the primary."""
+    cache: CacheSpec | None = None
+    """Prompt-cache tuning; requires ``caching = true``. Applied to the primary and every fallback."""
 
     @model_validator(mode="after")
-    def _id_xor_module(self) -> ModelSpec:
+    def _consistent(self) -> ModelSpec:
         if self.id is not None and self.module is not None:
             raise ValueError("model.id and model.module are mutually exclusive")
-        for key in ("base_url", "api_key_env"):
-            if getattr(self, key) is not None and not (self.id or "").startswith("openai-chat/"):
-                raise ValueError(f"model.{key} is only valid with an 'openai-chat/<model>' id")
+        _check_openai_chat_only(self, "model.")
+        if self.cache is not None and not self.caching:
+            raise ValueError("model.cache needs caching = true")
         swallowed = sorted(set(self.config) & AGENT_TOP_LEVEL_KEYS)
         if swallowed:
             raise ValueError(
@@ -69,6 +109,44 @@ class ModelSpec(_Strict):
                 "tools/skills/subagents must be written before the first table header like [model]"
             )
         return self
+
+    def candidates(self) -> list[ModelCandidate]:
+        """The primary followed by the fallbacks, each with inherited fields filled in."""
+        primary = (
+            ModelCandidate(
+                id=self.id,
+                module=self.module,
+                effort=self.effort,
+                base_url=self.base_url,
+                api_key_env=self.api_key_env,
+                config=self.config,
+            )
+            if (self.id or self.module)
+            else ModelCandidate(id="__default__", effort=self.effort, config=self.config)
+        )
+        resolved = [primary]
+        for entry in self.fallbacks:
+            candidate = ModelCandidate(id=entry) if isinstance(entry, str) else entry
+            inherit_openai_chat = (candidate.id or "").startswith("openai-chat/") and (self.id or "").startswith(
+                "openai-chat/"
+            )
+            resolved.append(
+                ModelCandidate(
+                    id=candidate.id,
+                    module=candidate.module,
+                    effort=candidate.effort if candidate.effort is not None else self.effort,
+                    base_url=candidate.base_url
+                    if candidate.base_url is not None or not inherit_openai_chat
+                    else self.base_url,
+                    api_key_env=(
+                        candidate.api_key_env
+                        if candidate.api_key_env is not None or not inherit_openai_chat
+                        else self.api_key_env
+                    ),
+                    config=candidate.config if candidate.config is not None else self.config,
+                )
+            )
+        return resolved
 
 
 class ContextSpec(_Strict):

@@ -66,3 +66,11 @@ async def test_invocation_state_reaches_tools_and_full_results(runtime: Runtime)
     tool_result = next(e for e in events if isinstance(e, ToolResultEvent))
     assert tool_result.content == [{"text": "tenant=acme"}]
     assert "acme" in result_of(events).text
+
+
+async def test_fallback_to_second_model_and_usage(runtime: Runtime) -> None:
+    events = await run(runtime, "fallback", "1 たす 1 は？数字だけ。")
+    result = result_of(events)
+    assert "2" in result.text
+    assert result.metrics.model_failures >= 1
+    assert result.metrics.total_tokens > 0 and "fallback" in result.metrics.agents

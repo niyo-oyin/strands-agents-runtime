@@ -1,0 +1,8 @@
+name = "fallback"
+description = "存在しないモデルを主にして、フォールバックが機能することを確認する"
+
+[model]
+id = "openai-chat/does-not-exist/model-404"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+fallbacks = ["openai-chat/deepseek/deepseek-v4.1-flash-1017"]

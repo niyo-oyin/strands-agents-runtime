@@ -91,6 +91,20 @@ uv run --env-file .env strands-runtime run assistant "今日は何日？"
 | `openai/<model>` | OpenAI Responses API（strands-harness 経由、effort 変換あり） | OpenAI 本家 |
 | `openai-chat/<model>` | Chat Completions（`strands.models.OpenAIModel`） | OpenAI 互換サーバー全般。`[model] base_url` で接続先、`api_key_env` でキーの環境変数名を指定可 |
 
+失敗時に別のモデルへ切り替えるには `fallbacks` を書きます（Strands の `ModelRouter`）。プロンプトキャッシュの調整は `[model.cache]`（Strands の `CacheConfig` のキーそのまま）です。
+
+```toml
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+fallbacks = ["openai-chat/xiaomi/mimo-v2.6-pro"]   # 文字列は接続先とキーを主から継承。テーブルで個別指定も可
+[model.cache]
+ttl = "1h"
+```
+
+`result.metrics` にはサブエージェントを含む合計トークン数と、`agents` にエージェントごとの内訳（モデル、呼び出し回数、トークン数）、`model_failures`（フォールバックした回数）が入ります。
+
 OpenAI 互換モデルはコンテキスト長を SDK が知らないため、`[model.config] context_window_limit` にモデルの値を書いてください（未指定だと SDK が 200,000 と仮定し、呼び出しごとに警告を出します）。
 
 公式と互換サーバーを同時に使うときは、エージェントごとに接続先とキーの環境変数を分けます。

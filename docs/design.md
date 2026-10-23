@@ -197,6 +197,10 @@ plugins = ["mycompany.plugins:AuditLog"] # 任意: strands.plugins.Plugin のモ
 id = "bedrock/global.anthropic.claude-opus-5"   # "provider/model-id"
 effort = "medium"                               # auto|off|minimal|low|medium|high|xhigh|max
 caching = true                                  # プロンプトキャッシュ
+fallbacks = ["bedrock/global.anthropic.claude-sonnet-4-6"]   # 任意: 失敗時に順に試す候補（ModelRouter）
+
+[model.cache]                            # 任意: プロンプトキャッシュの調整（Strands CacheConfig）
+ttl = "1h"
 
 [model.config]                           # プロバイダー固有の設定（Model.update_config に透過）
 max_tokens = 8192
@@ -244,6 +248,8 @@ timeout_seconds = 120                    # ランタイムが強制する実時�
 | `model.effort` | enum | `"auto"` | 同上（プロバイダー別の thinking/reasoning 設定に変換） |
 | `model.caching` | bool | `true` | 同上（`CacheConfig`） |
 | `model.config` | table | `{}` | `model.update_config(**config)`。キーはプロバイダーの `*Config` TypedDict |
+| `model.fallbacks` | list[str or table] | `[]` | 失敗時に順に試す候補。文字列は `id` で、effort・caching・接続先・キー・config を主から継承。テーブル（`id` / `module`、`effort`、`base_url`、`api_key_env`、`config`）で個別指定。1 つでもあれば `ModelRouter`（`FallbackStrategy`）になる |
+| `model.cache` | table | なし | Strands `CacheConfig` のキー（`strategy`、`ttl`、`system_prompt_ttl`、`cache_key`、`tools_ttl`）。`caching = true` が前提。主と全候補に適用 |
 | `model.base_url` | str | なし | `openai-chat/` 専用。接続先（省略時 `OPENAI_BASE_URL`） |
 | `model.api_key_env` | str | なし | `openai-chat/` 専用。キーを保持する環境変数名（省略時 `OPENAI_API_KEY`） |
 | `model.module` | `"pkg.mod:factory"` | なし | 7 プロバイダー以外や `ModelRouter` を使う逃げ道。`id` と排他 |
@@ -367,7 +373,8 @@ def build(self, d: AgentDefinition, session: SessionContext) -> Agent:
 - `model.config` は `Model.update_config(**config)` でプロバイダー固有設定を上書きする。
   キー名は Strands 各プロバイダーの `*Config` TypedDict に従う（例: Bedrock は `max_tokens`、`temperature`、`guardrail_id`、`service_tier`。Anthropic は `max_tokens`、`params`）。
   ランタイムはキーを解釈しない。
-- `model.module` は `Model` または `ModelRouter` を返す関数への参照。フォールバック戦略（`FallbackStrategy`）などはこの経路で行う。
+- `model.module` は `Model` または `ModelRouter` を返す関数への参照。
+- `fallbacks` があると、主と各候補を同じ手順で構築したうえで `ModelRouter([...])` に包む（既定の `FallbackStrategy`: 失敗した候補を避けて次を選び、成功すれば元に戻る）。候補ごとに `effort` を解決し、`[model.cache]` と `config` は全候補に適用する。
 - プロバイダーの追加依存（`strands-agents[anthropic]` 等）は本ランタイムの extras として同名で公開する（`strands-agents-runtime[anthropic]`）。
 
 ### 5.3 ツール
@@ -490,7 +497,9 @@ Strands の生イベント（`stream_async` の dict）は量が多く、シリ�
 | `result` | `stop_reason`, `text`, `structured_output`, `metrics`, `session_id` | `result` イベント |
 | `error` | `error_type`, `message` | 例外（Strands が `force_stop` の後に再送出する例外を 1 件の `error` にまとめる）。結果もエラーもなく終わった場合は `NoResult` |
 
-`result.metrics` は `EventLoopMetrics` から入出力トークン数とツール呼び出し回数を抜き出し、`latency_ms` はランタイムが計測した呼び出し全体の実時間とする（プロバイダーによって SDK が報告しないため）。
+`result.metrics` は呼び出し全体（サブエージェントを含むエージェントツリー）の合計で、`input_tokens` / `output_tokens` / `total_tokens` / `cache_read_tokens` / `cache_write_tokens`、`tool_calls`、`cycles`、`model_failures`（失敗してフォールバックした回数）を持ち、`agents` にエージェント名ごとの内訳（使ったモデル、呼び出し回数、トークン数）を載せる。
+Strands はエージェントオブジェクト単位でしか使用量を持たないため、ランタイムがツリー内の全エージェントにフックを付け、呼び出し前後の差分を名前ごとに集計する。同じ値は OpenTelemetry の現在のスパンにも `strands_runtime.usage.*` 属性として付ける。
+`latency_ms` はランタイムが計測した呼び出し全体の実時間（プロバイダーによって SDK が報告しないため）。
 イベント型は pydantic モデルで定義し、サーバーとクライアントで同じモジュールを使う。
 
 `result.stop_reason` は Strands の値（`end_turn`、`max_tokens`、`interrupt`、`limit_turns` など）をそのまま使い、次の 2 つだけランタイムが置き換える。

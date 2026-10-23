@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from typing import Any, Literal, cast
 
+from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field
 from strands.agent.agent_result import AgentResult
 from strands.types.agent import AgentInput, Limits
@@ -19,6 +20,7 @@ from strands.types.agent import AgentInput, Limits
 from strands_runtime.definitions.schema import RuntimeConfig
 from strands_runtime.errors import SessionBusyError, StrandsRuntimeError, UnknownAgentError
 from strands_runtime.events import (
+    AgentUsageEvent,
     ErrorEvent,
     InterruptEvent,
     InterruptInfo,
@@ -32,6 +34,7 @@ from strands_runtime.events import (
 )
 from strands_runtime.factory import AgentFactory, SessionContext
 from strands_runtime.factory.sessions import ANONYMOUS_ACTOR
+from strands_runtime.invoke.usage import UsageCollector
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +105,7 @@ class Invoker:
         timeout = definition.limits.timeout_seconds if definition.limits else None
         inner: AsyncIterator[dict[str, Any]] | None = None
         try:
-            agent = self._factory.build(run.agent_name, run.session)
+            agent = self._factory.build(run.agent_name, run.session, hooks=[run.usage])
             inner = agent.stream_async(
                 decode_prompt(run.request.prompt),
                 invocation_state=dict(run.request.invocation_state),
@@ -170,6 +173,7 @@ class _Run:
         self.cancel = threading.Event()
         self.timed_out = False
         self.terminal = False
+        self.usage = UsageCollector()
         self._started = time.monotonic()
 
     def request_timeout(self) -> None:
@@ -229,7 +233,8 @@ class _Run:
                     interrupts=[InterruptInfo(id=i.id, name=i.name, reason=i.reason) for i in result.interrupts]
                 )
             )
-        usage = result.metrics.accumulated_usage
+        metrics = self._metrics(result)
+        _record_usage_on_span(self.agent_name, self.session, metrics)
         events.append(
             ResultEvent(
                 agent=self.agent_name,
@@ -239,17 +244,39 @@ class _Run:
                 structured_output=(
                     result.structured_output.model_dump(mode="json") if result.structured_output is not None else None
                 ),
-                metrics=Metrics(
-                    input_tokens=int(usage.get("inputTokens", 0)),
-                    output_tokens=int(usage.get("outputTokens", 0)),
-                    total_tokens=int(usage.get("totalTokens", 0)),
-                    latency_ms=int((time.monotonic() - self._started) * 1000),
-                    cycles=result.metrics.cycle_count,
-                    tool_calls=sum(m.call_count for m in result.metrics.tool_metrics.values()),
-                ),
+                metrics=metrics,
             )
         )
         return events
+
+    def _metrics(self, result: AgentResult) -> Metrics:
+        """Totals across the agent tree from the collector; the root's own metrics are the fallback."""
+        totals = self.usage.totals()
+        if not self.usage.agents:
+            totals.add(cast(dict[str, int], dict(result.metrics.accumulated_usage)))
+        return Metrics(
+            input_tokens=totals.input_tokens,
+            output_tokens=totals.output_tokens,
+            total_tokens=totals.total_tokens,
+            cache_read_tokens=totals.cache_read_tokens,
+            cache_write_tokens=totals.cache_write_tokens,
+            latency_ms=int((time.monotonic() - self._started) * 1000),
+            cycles=result.metrics.cycle_count,
+            tool_calls=sum(m.call_count for m in result.metrics.tool_metrics.values()),
+            model_failures=self.usage.model_failures,
+            agents={
+                name: AgentUsageEvent(
+                    model=u.model,
+                    invocations=u.invocations,
+                    input_tokens=u.input_tokens,
+                    output_tokens=u.output_tokens,
+                    total_tokens=u.total_tokens,
+                    cache_read_tokens=u.cache_read_tokens,
+                    cache_write_tokens=u.cache_write_tokens,
+                )
+                for name, u in self.usage.agents.items()
+            },
+        )
 
     def _stop_reason(self, result: AgentResult) -> str:
         """Runtime stop reasons: the SDK's, except that a structured answer and a runtime timeout get their own."""
@@ -258,6 +285,27 @@ class _Run:
         if result.structured_output is not None:
             return "structured_output"
         return str(result.stop_reason)
+
+
+def _record_usage_on_span(agent: str, session: SessionContext, metrics: Metrics) -> None:
+    """Put the invocation's totals on the current OpenTelemetry span (the server request span when instrumented)."""
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+    span.set_attributes(
+        {
+            "strands_runtime.agent": agent,
+            "strands_runtime.session_id": session.session_id,
+            "strands_runtime.actor_id": session.actor_id,
+            "strands_runtime.usage.input_tokens": metrics.input_tokens,
+            "strands_runtime.usage.output_tokens": metrics.output_tokens,
+            "strands_runtime.usage.total_tokens": metrics.total_tokens,
+            "strands_runtime.usage.cache_read_tokens": metrics.cache_read_tokens,
+            "strands_runtime.usage.cache_write_tokens": metrics.cache_write_tokens,
+            "strands_runtime.model_failures": metrics.model_failures,
+            "strands_runtime.tool_calls": metrics.tool_calls,
+        }
+    )
 
 
 def decode_prompt(prompt: str | list[dict[str, Any]]) -> AgentInput:

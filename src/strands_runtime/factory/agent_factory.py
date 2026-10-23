@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 from strands import Agent
+from strands.hooks import HookProvider
 
 from strands_runtime.definitions.loader import ResolvedAgent
 from strands_runtime.definitions.registry import Registry
@@ -45,11 +47,13 @@ class AgentFactory:
     def registry(self) -> Registry:
         return self._registry
 
-    def build(self, name: str, session: SessionContext) -> Agent:
-        """Build the published agent ``name`` for ``session``."""
-        return self._build(self._registry.get(name), session, depth=0, persist=True)
+    def build(self, name: str, session: SessionContext, *, hooks: Sequence[HookProvider] = ()) -> Agent:
+        """Build the published agent ``name`` for ``session``; ``hooks`` are attached to every agent in the tree."""
+        return self._build(self._registry.get(name), session, depth=0, persist=True, hooks=list(hooks))
 
-    def _build(self, resolved: ResolvedAgent, session: SessionContext, *, depth: int, persist: bool) -> Agent:
+    def _build(
+        self, resolved: ResolvedAgent, session: SessionContext, *, depth: int, persist: bool, hooks: list[HookProvider]
+    ) -> Agent:
         """``persist=False`` builds a subagent: no session manager, so ``as_tool()`` can reset it per call."""
         d = resolved.definition
         if depth > self._config.runtime.max_subagent_depth:
@@ -60,7 +64,7 @@ class AgentFactory:
         tools: list[Any] = [*resolved.tools, *self._mcp.get(resolved)]
         for sub_name in d.subagents:
             sub = self._registry.dependency(sub_name)
-            child = self._build(sub, session.child(sub_name), depth=depth + 1, persist=False)
+            child = self._build(sub, session.child(sub_name), depth=depth + 1, persist=False, hooks=hooks)
             tools.append(child.as_tool(name=sub.name, description=sub.definition.description or None))
 
         plugins = [*build_plugins(resolved), *build_context_injectors(resolved, session)]
@@ -85,7 +89,7 @@ class AgentFactory:
             name=d.name,
             agent_id=d.name,
             description=d.description or None,
-            model=build_model(d.model, default_id=self._config.model.default_id),
+            model=build_model(d.model, self._config.model),
             system_prompt=resolved.system_prompt,
             tools=tools,
             plugins=plugins or None,
@@ -94,5 +98,6 @@ class AgentFactory:
             structured_output_model=structured_output_model,
             interventions=build_interventions(resolved) or None,
             callback_handler=None,
+            hooks=list(hooks) or None,
             trace_attributes=trace_attributes,
         )

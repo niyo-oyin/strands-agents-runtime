@@ -58,13 +58,32 @@ class InterruptEvent(_Event):
     interrupts: list[InterruptInfo]
 
 
-class Metrics(_Event):
+class AgentUsageEvent(_Event):
+    """Token usage of one agent in the invocation's agent tree (the root and each subagent)."""
+
+    model: str
+    invocations: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+class Metrics(_Event):
+    """Totals across the whole agent tree; ``agents`` has the per-agent breakdown."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     latency_ms: int = 0
     cycles: int = 0
     tool_calls: int = 0
+    model_failures: int = 0
+    """Model calls that raised (and, with ``[model] fallbacks``, were retried on another candidate)."""
+    agents: dict[str, AgentUsageEvent] = Field(default_factory=dict)
 
 
 class ResultEvent(_Event):
