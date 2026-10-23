@@ -583,6 +583,8 @@ Strands が提供する他の方式に対しては、定義フォーマットに
   未設定なら何もしない（localhost:4318 への無駄な接続を避ける）。
   ただし、グローバルな TracerProvider が既に設定されている場合（`opentelemetry-instrument` 配下で起動した場合）は、環境変数の有無にかかわらず何もしない。AgentCore 上では ADOT が `OTEL_TRACES_EXPORTER=otlp` を注入するため、このガードがないとエクスポーターが二重になる。
 - `Agent(trace_attributes=...)` に `session.id`、`user.id`、`agent.name` を付与する。AgentCore のセッションヘッダーは ADOT が自動で `session.id` に紐づける。
+- スパンの形式は OpenTelemetry の GenAI セマンティック規約（`gen_ai.*`）に加え、Strands が OpenInference 互換の `llm.token_count.*` も併記するため、OTLP を受ける LLM 可視化ツールでそのまま読める。ランタイムが足す合計値は独自の `strands_runtime.usage.*` 名前空間で、二重計上を避けるため `gen_ai.usage.*` は使わない。
+- 確認済み（2026-10-23、Arize Phoenix を Docker で起動し OTLP/HTTP で送信）: `invoke_agent <親>` → `execute_event_loop_cycle` → `chat`（モデル呼び出し）→ `execute_tool <子>` → `invoke_agent <子>` → `chat` の階層、各 `chat` の `gen_ai.usage.*`（入出力・キャッシュ読み書き）、`session.id` / `user.id` / `gen_ai.agent.name` の付与、ルートの `invoke_agent` にランタイムの `strands_runtime.usage.*` が載ることを確認。サブエージェントの `session.id` は `<親>--<子>`。`make phoenix-up` で再現できる。
 - 構造化ログは標準 `logging` で出し、JSON フォーマッタは導入しない（ADOT のログ連携と CloudWatch で十分）。
 - `serve` はランタイム・Strands・uvicorn・Python の警告をすべてルートロガーに集約し、`[server] log_file` が設定されていれば同じ内容をファイルにも書く。端末を見られない作業者（別の運用者、エージェント、CI）がサーバーの観測結果を読めるようにするためのもの。
 - OpenAI 互換モデルは SDK がコンテキスト長を知らないため、`[model.config] context_window_limit` を定義側で指定する（未指定なら SDK が 200,000 と仮定して警告する）。

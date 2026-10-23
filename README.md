@@ -136,6 +136,18 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml ru
 - 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）は `prompt = [{"interruptResponse": {...}}]` で再開。
 - 実モデルの結合テスト: `uv run --env-file .env pytest tests_integ -q`
 
+## 観測性（OpenTelemetry）
+
+Strands がモデル呼び出し・ツール呼び出し・エージェント実行を OTel GenAI 規約（`gen_ai.*`）のスパンとして出すので、
+OTLP を受ける LLM 可視化ツール（Arize Phoenix、Langfuse、LangSmith、Datadog、CloudWatch GenAI Observability など）でそのまま見られます。
+ランタイムはルートのスパンに呼び出し全体の合計（`strands_runtime.usage.*`）と `session.id` / `user.id` を付けます。
+
+```bash
+make phoenix-up      # Arize Phoenix を Docker で起動（UI: http://localhost:6006）
+OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+  uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run coordinator "要約して: ..."
+```
+
 ## Docker
 
 同じイメージをローカル、任意のコンテナ基盤、Amazon Bedrock AgentCore Runtime で使います（既定 linux/arm64、コンテナ内は `0.0.0.0:8080`）。
