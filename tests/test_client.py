@@ -40,7 +40,7 @@ def _free_port() -> int:
 
 @pytest.fixture
 def http_client(runtime: Runtime) -> Iterator[HttpClient]:
-    """A real uvicorn server in a thread: HttpClient is synchronous, so an in-process ASGI transport won't do."""
+    """スレッドで動かす本物の uvicorn サーバー。HttpClient は同期なので、プロセス内の ASGI トランスポートでは代用できない。"""
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(create_app(runtime), host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)

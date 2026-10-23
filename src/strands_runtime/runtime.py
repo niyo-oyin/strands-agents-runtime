@@ -1,6 +1,6 @@
-"""Composition root: load configuration and wire registry → factory → invoker.
+"""組み立ての根。設定を読み、レジストリ → 工場 → Invoker の順に配線する。
 
-Both the HTTP server and the CLI start from :meth:`Runtime.load` so they share one code path.
+HTTP サーバーも CLI も :meth:`Runtime.load` から始まるので、起動の経路は 1 つに揃う。
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ DEFAULT_CONFIG_FILE = "runtime.toml"
 
 @dataclass(frozen=True)
 class Runtime:
+    """読み込み済みの設定と、配線済みの各層。"""
+
     base_dir: Path
     config: RuntimeConfig
     registry: Registry
@@ -28,7 +30,11 @@ class Runtime:
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Runtime:
-        """Load ``runtime.toml`` (argument, ``$STRANDS_RUNTIME_CONFIG`` or ``./runtime.toml``) and all agents."""
+        """``runtime.toml``（引数、``$STRANDS_RUNTIME_CONFIG``、``./runtime.toml`` の順に探す）と全エージェントを読む。
+
+        ``runtime.toml`` の置き場所が、相対パス（``agents_dir`` やセッションの ``dir``）の基準になる。
+        定義に問題があればここで例外になり、サーバーは起動しない。
+        """
         path = (config_path or Path(os.environ.get(CONFIG_ENV_VAR, DEFAULT_CONFIG_FILE))).resolve()
         base_dir = path.parent
         config = load_runtime_config(path)

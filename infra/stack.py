@@ -1,4 +1,4 @@
-"""One CloudFormation stack: the shared image, per-Runtime resources, and what each Runtime needs around it."""
+"""CloudFormation スタック 1 つ分。共有イメージ、Runtime ごとのリソース、Runtime が必要とする周辺リソース。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from constructs import Construct
 from infra.spec import Deployments, RuntimeSpec, session_backend
 
 IMAGE_APP_DIR = "/app"
-"""Where the Dockerfile puts the project; ``STRANDS_RUNTIME_CONFIG`` points inside it."""
+"""Dockerfile がプロジェクトを置くディレクトリ。``STRANDS_RUNTIME_CONFIG`` はこの配下を指す。"""
 
 
 class StrandsRuntimeStack(Stack):
@@ -22,13 +22,14 @@ class StrandsRuntimeStack(Stack):
         super().__init__(scope, construct_id)
         self.repo_root = repo_root
 
-        # One image for every Runtime (linux/arm64, built from the repo's Dockerfile at deploy time).
+        # 全 Runtime で 1 つのイメージを共有する（リポジトリの Dockerfile からデプロイ時に linux/arm64 でビルド）。
         artifact = agentcore.AgentRuntimeArtifact.from_asset(
             str(repo_root),
             platform=Platform.LINUX_ARM64,
             exclude=[".git", ".venv", ".env", ".runtime", ".sessions", "cdk.out", "tests", "tests_integ", "docs"],
         )
 
+        # 各 Runtime の runtime.toml からセッションバックエンドを読み、必要な周辺リソースを決める。
         backends = {spec.name: session_backend(repo_root, spec.config) for spec in deployments.runtime}
 
         self.session_bucket: s3.Bucket | None = None
@@ -40,12 +41,13 @@ class StrandsRuntimeStack(Stack):
                 encryption=s3.BucketEncryption.S3_MANAGED,
                 enforce_ssl=True,
                 versioned=False,
+                # 会話履歴はスタックを消しても残す。
                 removal_policy=RemovalPolicy.RETAIN,
             )
 
         self.memory: agentcore.Memory | None = None
         if "agentcore_memory" in backends.values():
-            # Short-term memory only; long-term strategies are an agent-definition concern (phase 3).
+            # 短期記憶（会話イベント）だけを持つ。長期記憶の戦略はエージェント定義側の設定として後から足す。
             self.memory = agentcore.Memory(self, "Memory", expiration_duration=Duration.days(30))
 
         self.runtimes: dict[str, agentcore.Runtime] = {}
@@ -53,6 +55,7 @@ class StrandsRuntimeStack(Stack):
             self.runtimes[spec.name] = self._runtime(spec, artifact, backends[spec.name])
 
     def _runtime(self, spec: RuntimeSpec, artifact: agentcore.AgentRuntimeArtifact, backend: str) -> agentcore.Runtime:
+        """Runtime 1 つと、その環境変数・権限を作る。"""
         env: dict[str, str] = {
             "STRANDS_RUNTIME_CONFIG": f"{IMAGE_APP_DIR}/{spec.config}",
             **spec.env,
@@ -64,7 +67,8 @@ class StrandsRuntimeStack(Stack):
             assert self.memory is not None
             env["AGENTCORE_MEMORY_ID"] = self.memory.memory_id
         for name, secret_name in spec.secrets.items():
-            # A CloudFormation dynamic reference: the value is substituted at deploy time, never in the template.
+            # CloudFormation の動的参照 ``{{resolve:secretsmanager:...}}`` にする。
+            # 値はデプロイ時に差し替えられ、テンプレートには入らない。
             env[name] = SecretValue.secrets_manager(secret_name).unsafe_unwrap()
 
         runtime = agentcore.Runtime(
@@ -84,7 +88,7 @@ class StrandsRuntimeStack(Stack):
             tracing_enabled=True,
             description=f"strands-agents-runtime ({spec.config})",
         )
-        # The L2 construct grants ECR, logs, X-Ray and workload identity, but not model access.
+        # L2 コンストラクトが付けるのは ECR・ログ・X-Ray・ワークロード ID の権限だけで、モデル呼び出しは含まれない。
         runtime.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:ApplyGuardrail"],

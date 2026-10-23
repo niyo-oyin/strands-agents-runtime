@@ -1,4 +1,4 @@
-"""Resolve ``pkg.module:attr`` / ``/abs/path.py:attr`` references from definitions to Python objects."""
+"""定義に書かれた ``pkg.module:attr`` / ``/abs/path.py:attr`` 形式の参照を Python オブジェクトに解決する。"""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ T = TypeVar("T")
 
 
 def _import_file(path: Path) -> Any:
+    """``.py`` ファイルをモジュールとして読み込む。同じファイルは 1 度だけ読み、``sys.modules`` で共有する。"""
+    # パスから決まる名前で登録し、2 回目以降は読み込み済みのモジュールを返す（モジュール内の状態を共有するため）。
     module_name = f"_strands_runtime_ref_{abs(hash(str(path)))}"
     if module_name in sys.modules:
         return sys.modules[module_name]
@@ -27,13 +29,14 @@ def _import_file(path: Path) -> Any:
     try:
         spec.loader.exec_module(module)
     except Exception as exc:
+        # 読み込みに失敗したモジュールを残すと、次回は壊れた状態のものが返るので取り除く。
         del sys.modules[module_name]
         raise ReferenceResolutionError(f"error importing {path}: {exc}") from exc
     return module
 
 
 def load_attribute(reference: str) -> Any:
-    """Return the object named by ``module:attr`` (module path or absolute ``.py`` path)."""
+    """``module:attr`` が指すオブジェクトを返す。``module`` はモジュールパスか、絶対パスの ``.py`` ファイル。"""
     module_part, sep, attr = reference.partition(":")
     if not sep or not attr:
         raise ReferenceResolutionError(f"{reference!r} must be of the form 'module:attribute'")
@@ -51,11 +54,10 @@ def load_attribute(reference: str) -> Any:
 
 
 def resolve_instance[T](reference: str, expected: type[T]) -> T:
-    """Resolve a reference to an *instance* of ``expected``.
+    """参照を ``expected`` 型の「インスタンス」に解決する。
 
-    The attribute may be an instance already, a class (instantiated with no arguments), or a
-    zero-argument factory function. This keeps definitions terse while still allowing code to
-    configure complex objects.
+    参照先はインスタンスそのものでも、引数なしで生成できるクラスでも、引数なしのファクトリ関数でもよい。
+    定義ファイル側は名前を書くだけで済み、複雑な設定はコード側で行える。
     """
     obj = load_attribute(reference)
     if isinstance(obj, expected):
@@ -74,7 +76,7 @@ def resolve_instance[T](reference: str, expected: type[T]) -> T:
 
 
 def resolve_class[T](reference: str, expected: type[T]) -> type[T]:
-    """Resolve a reference to a subclass of ``expected`` (used for pydantic structured-output models)."""
+    """参照を ``expected`` のサブクラスに解決する（構造化出力の pydantic モデルなどに使う）。"""
     obj = load_attribute(reference)
     if inspect.isclass(obj) and issubclass(obj, expected):
         return obj

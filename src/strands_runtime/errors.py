@@ -1,14 +1,14 @@
-"""Runtime-wide exception types."""
+"""ランタイム全体で使う例外。"""
 
 from __future__ import annotations
 
 
 class StrandsRuntimeError(Exception):
-    """Base class for errors raised by strands_runtime."""
+    """strands_runtime が送出する例外の基底。CLI はこれを捕まえて 1 行のエラー表示にする。"""
 
 
 class DefinitionError(StrandsRuntimeError):
-    """An agent definition or runtime config is invalid."""
+    """エージェント定義または runtime.toml が不正。``source`` はファイルパスで、メッセージの先頭に付く。"""
 
     def __init__(self, message: str, *, source: str | None = None) -> None:
         self.source = source
@@ -16,7 +16,7 @@ class DefinitionError(StrandsRuntimeError):
 
 
 class UnknownAgentError(StrandsRuntimeError):
-    """The requested agent is not published by this runtime."""
+    """要求されたエージェントがこのランタイムで公開されていない。サーバーは 404 にする。"""
 
     def __init__(self, name: str, available: list[str]) -> None:
         self.name = name
@@ -25,7 +25,7 @@ class UnknownAgentError(StrandsRuntimeError):
 
 
 class SessionBusyError(StrandsRuntimeError):
-    """Another invocation is running for the same session in this process (mirrors AgentCore's 409)."""
+    """同じセッションの別の呼び出しがこのプロセスで実行中。サーバーは 409 にする（AgentCore の扱いと同じ）。"""
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -33,4 +33,4 @@ class SessionBusyError(StrandsRuntimeError):
 
 
 class ReferenceResolutionError(StrandsRuntimeError):
-    """A module/attribute reference in a definition could not be resolved."""
+    """定義に書かれたモジュール・属性の参照を解決できない。"""

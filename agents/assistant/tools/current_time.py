@@ -1,4 +1,7 @@
-"""Example custom tool loaded from the agent directory."""
+"""エージェントディレクトリから読み込まれるカスタムツールの例。
+
+``@tool`` の関数名がツール名、docstring がモデルに見せる説明になる。
+"""
 
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo

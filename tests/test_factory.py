@@ -100,7 +100,7 @@ def test_openai_chat_api_key_env_selects_a_per_agent_key(tmp_path: Path, monkeyp
     official = runtime.factory.build("official", SESSION)
     local = runtime.factory.build("local", SESSION)
     assert isinstance(official.model, OpenAIModel) and isinstance(local.model, OpenAIModel)
-    assert official.model.client_args.get("api_key") is None  # openai SDK falls back to OPENAI_API_KEY
+    assert official.model.client_args.get("api_key") is None  # openai SDK が OPENAI_API_KEY にフォールバックする
     assert local.model.client_args == {"base_url": "http://localhost:9/v1", "api_key": "local-key"}
     assert local.model.get_config()["model_id"] == "org/model:tag"
 
@@ -139,13 +139,13 @@ def test_fallbacks_build_a_model_router_with_shared_cache(tmp_path: Path, monkey
 
     agent = runtime.factory.build("a", SESSION)
 
-    # Agent registers the router as a plugin and exposes the default model on ``.model``.
+    # Agent はルーターをプラグインとして登録し、``.model`` には既定のモデルを出す。
     router = agent._model_router
     assert isinstance(router, ModelRouter) and isinstance(agent.model, OpenAIModel)
     models = [c.model for c in router.candidates]
     assert [m.get_config()["model_id"] for m in models] == ["primary", "second", "third"]  # type: ignore[union-attr]
     assert all(isinstance(m, OpenAIModel) for m in models)
-    # A plain-string fallback inherits endpoint, key and config; a table overrides them.
+    # 文字列だけのフォールバックは接続先・キー・設定を引き継ぎ、テーブル形式は上書きする。
     assert models[1].client_args == {"base_url": "http://localhost:9/v1", "api_key": "k1"}  # type: ignore[attr-defined]
     assert models[2].client_args == {"base_url": "http://other:9/v1", "api_key": "k2"}  # type: ignore[attr-defined]
     for m in models:

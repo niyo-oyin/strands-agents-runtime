@@ -1,4 +1,4 @@
-"""The CDK stack synthesizes without an AWS account; assert what the template wires for each Runtime."""
+"""CDK スタックは AWS アカウントなしで合成できる。テンプレートが各 Runtime に何を結び付けるかを検証する。"""
 
 from __future__ import annotations
 
@@ -58,14 +58,14 @@ def test_runtime_gets_config_path_bucket_and_secret_reference() -> None:
             },
         },
     )
-    # The execution role may read and write session objects and call Bedrock models.
+    # 実行ロールはセッションオブジェクトの読み書きと Bedrock モデルの呼び出しができる。
     template.has_resource_properties(
         "AWS::IAM::Policy",
         {
             "PolicyDocument": {
                 "Statement": Match.array_with(
                     [
-                        # array_with is order-sensitive: the Bedrock statement is added before the bucket grant.
+                        # array_with は順序を見る。Bedrock のステートメントはバケットの権限付与より先に追加される。
                         Match.object_like({"Action": Match.array_with(["bedrock:InvokeModelWithResponseStream"])}),
                         Match.object_like({"Action": Match.array_with(["s3:PutObject"])}),
                     ]

@@ -1,1 +1,1 @@
-"""AWS CDK app that deploys the runtime image to Amazon Bedrock AgentCore Runtime (phase 2)."""
+"""ランタイムのイメージを Amazon Bedrock AgentCore Runtime にデプロイする AWS CDK アプリ。"""

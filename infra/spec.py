@@ -1,4 +1,4 @@
-"""``infra/deployments.toml``: which AgentCore Runtimes to create from the one image."""
+"""``infra/deployments.toml``。1 つのイメージからどの AgentCore Runtime を作るかの宣言。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# AgentRuntimeName の制約（英字で始まり、英数字と _、48 文字まで）。
 RUNTIME_NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,47}$")
 
 
@@ -21,15 +22,17 @@ class StackSpec(_Strict):
 
 
 class RuntimeSpec(_Strict):
+    """``[[runtime]]`` 1 つ分。"""
+
     name: str = Field(pattern=RUNTIME_NAME.pattern)
     config: str = Field(min_length=1)
-    """Repo-relative path of this Runtime's ``runtime.toml``; the image holds it at ``/app/<config>``."""
+    """この Runtime が読む ``runtime.toml`` のリポジトリ相対パス。イメージ内では ``/app/<config>`` にある。"""
     platform_version: Literal["V1", "V2"] = "V2"
     idle_timeout_seconds: int = Field(default=900, ge=60, le=28800)
     max_lifetime_seconds: int = Field(default=28800, ge=60, le=28800)
     env: dict[str, str] = Field(default_factory=dict)
     secrets: dict[str, str] = Field(default_factory=dict)
-    """env var name → Secrets Manager secret name, resolved by CloudFormation at deploy time."""
+    """環境変数名 → Secrets Manager のシークレット名。値はデプロイ時に CloudFormation が解決する。"""
 
     @model_validator(mode="after")
     def _idle_within_lifetime(self) -> RuntimeSpec:
@@ -58,7 +61,11 @@ def load_deployments(path: Path) -> Deployments:
 
 
 def session_backend(repo_root: Path, runtime_config: str) -> str:
-    """Read ``[session] backend`` from a Runtime's ``runtime.toml`` without env expansion (synth has no secrets)."""
+    """Runtime の ``runtime.toml`` から ``[session] backend`` だけを読む。
+
+    ランタイム本体のローダーは ``${VAR}`` を環境変数に展開するが、合成（synth）時にはシークレットが揃っていないので、
+    展開せずに TOML を直接読む。
+    """
     with (repo_root / runtime_config).open("rb") as fh:
         data = tomllib.load(fh)
     backend = data.get("session", {}).get("backend", "local")

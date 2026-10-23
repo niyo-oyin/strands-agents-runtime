@@ -1,8 +1,8 @@
-"""Pydantic schemas for ``agent.toml`` and ``runtime.toml``.
+"""``agent.toml`` と ``runtime.toml`` の pydantic スキーマ。
 
-These models validate the *shape* of the TOML files only. Filesystem resolution (prompt text,
-relative paths, ``mcp.json``) happens in :mod:`strands_runtime.definitions.loader`, and turning a
-definition into a live ``strands.Agent`` happens in :mod:`strands_runtime.factory`.
+ここで検証するのは TOML の「形」だけ。
+プロンプト本文の読み込みや相対パスの解決、``mcp.json`` の読み込みは :mod:`strands_runtime.definitions.loader` が、
+定義から ``strands.Agent`` を組み立てるのは :mod:`strands_runtime.factory` が担当する。
 """
 
 from __future__ import annotations
@@ -17,30 +17,33 @@ ContextManagerName = Literal["auto", "agentic", "off"]
 SessionBackend = Literal["inherit", "local", "s3", "agentcore_memory", "none"]
 
 AGENT_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-"""Agent names double as directory names, tool names (for ``subagents``) and ``agent_id`` values."""
+"""エージェント名はディレクトリ名・``subagents`` のツール名・``agent_id`` を兼ねるため、英小文字と数字に限定する。"""
 
 NonBlankStr = Annotated[str, Field(min_length=1, pattern=r"\S")]
 
 AGENT_TOP_LEVEL_KEYS = frozenset(
     {"name", "description", "kind", "prompt", "tools", "skills", "subagents", "mcp_servers", "interventions", "plugins"}
 )
-"""Bare keys of ``agent.toml``. Listed here so ``[model.config]`` can detect keys written after a table header."""
+"""``agent.toml`` のトップレベルキー。
+TOML ではテーブル見出し（``[model]`` など）より後に書いたキーがそのテーブルに属してしまうため、
+``[model.config]`` に紛れ込んだトップレベルキーを検出するのに使う。"""
 
 
 class _Strict(BaseModel):
-    """Unknown keys are rejected so typos in TOML fail fast."""
+    """未知のキーを拒否し、TOML の綴り間違いを起動時に止める。"""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
 def _check_openai_chat_only(obj: ModelCandidate | ModelSpec, prefix: str) -> None:
+    """``base_url`` と ``api_key_env`` は ``openai-chat/`` プロバイダー専用の設定であることを確認する。"""
     for key in ("base_url", "api_key_env"):
         if getattr(obj, key) is not None and obj.id is not None and not obj.id.startswith("openai-chat/"):
             raise ValueError(f"{prefix}{key} is only valid with an 'openai-chat/<model>' id")
 
 
 class ModelCandidate(_Strict):
-    """One entry of ``[model] fallbacks``. Unset fields inherit the primary model's values."""
+    """``[model] fallbacks`` の 1 要素。未指定の項目は主モデルの値を引き継ぐ。"""
 
     id: NonBlankStr | None = None
     module: NonBlankStr | None = None
@@ -58,7 +61,7 @@ class ModelCandidate(_Strict):
 
 
 class CacheSpec(_Strict):
-    """``[model.cache]`` table → ``strands.models.CacheConfig`` (prompt caching); keys are the SDK's."""
+    """``[model.cache]`` テーブル。``strands.models.CacheConfig``（プロンプトキャッシュ）にそのまま渡す。キー名は SDK のもの。"""
 
     strategy: Literal["auto", "anthropic"] = "auto"
     ttl: NonBlankStr | None = None
@@ -68,12 +71,12 @@ class CacheSpec(_Strict):
 
 
 class ModelSpec(_Strict):
-    """``[model]`` table.
+    """``[model]`` テーブル。
 
-    ``id`` is a ``"provider/model-id"`` string resolved by ``strands_harness.models.resolve_model``;
-    ``module`` is a module reference to a factory returning a ``strands.models.Model`` or ``ModelRouter``
-    for anything the provider table cannot express. ``config`` is passed verbatim to ``Model.update_config``.
-    ``fallbacks`` turns the model into a ``ModelRouter`` that switches candidates when a call fails.
+    ``id`` は ``"provider/model-id"`` 形式で、``strands_harness.models.resolve_model`` が解決する。
+    ``module`` はプロバイダー表で表せないモデル（``Model`` または ``ModelRouter`` を返す関数）へのモジュール参照。
+    ``config`` はそのまま ``Model.update_config`` に渡す。
+    ``fallbacks`` を書くと、呼び出し失敗時に候補を切り替える ``ModelRouter`` になる。
     """
 
     id: NonBlankStr | None = None
@@ -81,19 +84,19 @@ class ModelSpec(_Strict):
     effort: Effort = "auto"
     caching: bool = True
     base_url: NonBlankStr | None = None
-    """Endpoint for the ``openai-chat`` provider (OpenAI-compatible Chat Completions); default ``OPENAI_BASE_URL``."""
+    """``openai-chat`` プロバイダー（OpenAI 互換 Chat Completions）の接続先。省略時は ``OPENAI_BASE_URL``。"""
     api_key_env: NonBlankStr | None = None
-    """Name of the environment variable holding the key for ``openai-chat``; default ``OPENAI_API_KEY``.
+    """``openai-chat`` のキーを保持する環境変数の名前。省略時は ``OPENAI_API_KEY``。
 
-    Lets one runtime talk to several OpenAI-compatible endpoints with different keys. The value never
-    appears in TOML, only the variable name.
+    値ではなく変数名だけを TOML に書く。
+    エージェントごとに別の変数を指せるので、公式 OpenAI と互換サーバーを同じランタイムで同時に使える。
     """
     config: dict[str, Any] = Field(default_factory=dict)
     fallbacks: list[NonBlankStr | ModelCandidate] = Field(default_factory=list)
-    """Models tried, in order, when the previous one fails (``ModelRouter`` + ``FallbackStrategy``).
-    A plain string is an ``id`` that inherits effort, caching, endpoint, key and config from the primary."""
+    """前の候補が失敗したときに順に試すモデル（``ModelRouter`` + ``FallbackStrategy``）。
+    文字列は ``id`` の指定で、effort・caching・接続先・キー・config を主モデルから引き継ぐ。"""
     cache: CacheSpec | None = None
-    """Prompt-cache tuning; requires ``caching = true``. Applied to the primary and every fallback."""
+    """プロンプトキャッシュの調整。``caching = true`` が前提で、主モデルと全候補に適用する。"""
 
     @model_validator(mode="after")
     def _consistent(self) -> ModelSpec:
@@ -102,6 +105,8 @@ class ModelSpec(_Strict):
         _check_openai_chat_only(self, "model.")
         if self.cache is not None and not self.caching:
             raise ValueError("model.cache needs caching = true")
+        # ``[model.config]`` の後に ``tools = [...]`` を書くと TOML 上は ``model.config.tools`` になる。
+        # 黙って無視すると「ツールが登録されない」という分かりにくい事象になるので、助言付きで拒否する。
         swallowed = sorted(set(self.config) & AGENT_TOP_LEVEL_KEYS)
         if swallowed:
             raise ValueError(
@@ -111,7 +116,8 @@ class ModelSpec(_Strict):
         return self
 
     def candidates(self) -> list[ModelCandidate]:
-        """The primary followed by the fallbacks, each with inherited fields filled in."""
+        """主モデルを先頭に、継承を解決済みのフォールバック候補を並べて返す。"""
+        # ``id`` も ``module`` もない場合は runtime.toml の既定モデルを使う。番兵 ``__default__`` を factory 側が解釈する。
         primary = (
             ModelCandidate(
                 id=self.id,
@@ -127,6 +133,7 @@ class ModelSpec(_Strict):
         resolved = [primary]
         for entry in self.fallbacks:
             candidate = ModelCandidate(id=entry) if isinstance(entry, str) else entry
+            # 接続先とキーは、主も候補も ``openai-chat/`` のときだけ引き継ぐ（他プロバイダーでは意味を持たない）。
             inherit_openai_chat = (candidate.id or "").startswith("openai-chat/") and (self.id or "").startswith(
                 "openai-chat/"
             )
@@ -150,18 +157,19 @@ class ModelSpec(_Strict):
 
 
 class ContextSpec(_Strict):
-    """``[context]`` table → ``Agent(context_manager=...)`` plus just-in-time context injection."""
+    """``[context]`` テーブル。``Agent(context_manager=...)`` と、各ターンへの一時的なコンテキスト注入。"""
 
     manager: ContextManagerName | dict[str, Any] = "auto"
     inject: list[NonBlankStr] = Field(default_factory=list)
-    """Text injected into each user turn without touching history: built-in ``"datetime"`` and ``"actor"``,
-    or a module reference to a callable ``(InjectionContext) -> str | None`` (SDK ``ContextInjector``)."""
+    """ユーザーターンごとに注入する文（会話履歴には残らない）。
+    組み込みは ``"datetime"`` と ``"actor"``。それ以外は ``(InjectionContext) -> str | None`` を返す呼び出し可能オブジェクトへの
+    モジュール参照で、SDK の ``ContextInjector`` に渡す。"""
     timezone: NonBlankStr = "UTC"
-    """IANA zone used by the ``datetime`` injector."""
+    """``datetime`` 注入が使う IANA タイムゾーン名。"""
 
 
 class RetrievalSpec(_Strict):
-    """Per-namespace long-term memory retrieval for the ``agentcore_memory`` backend."""
+    """``agentcore_memory`` バックエンドで、名前空間ごとに長期記憶を取り込む設定。"""
 
     top_k: int = Field(default=10, gt=0, le=1000)
     relevance_score: float = Field(default=0.2, ge=0.0, le=1.0)
@@ -169,16 +177,16 @@ class RetrievalSpec(_Strict):
 
 
 class SessionSpec(_Strict):
-    """``[session]`` table, used both in ``runtime.toml`` (defaults) and ``agent.toml`` (override)."""
+    """``[session]`` テーブル。``runtime.toml`` では既定、``agent.toml`` では上書きとして使う。"""
 
     backend: SessionBackend = "inherit"
-    # local
+    # local 用
     dir: NonBlankStr | None = None
-    # s3
+    # s3 用
     bucket: NonBlankStr | None = None
     prefix: str = ""
     region: NonBlankStr | None = None
-    # agentcore_memory
+    # agentcore_memory 用
     memory_id: NonBlankStr | None = None
     retrieval: dict[str, RetrievalSpec] = Field(default_factory=dict)
 
@@ -192,26 +200,27 @@ class SessionSpec(_Strict):
 
 
 class StructuredOutputSpec(_Strict):
-    """``[structured_output]`` table: a module reference to a pydantic model class."""
+    """``[structured_output]`` テーブル。pydantic モデルクラスへのモジュール参照。"""
 
     model: NonBlankStr
 
 
 class LimitsSpec(_Strict):
-    """``[limits]`` table → ``strands.types.agent.Limits`` for every invocation."""
+    """``[limits]`` テーブル。毎回の呼び出しに適用する ``strands.types.agent.Limits``。"""
 
     turns: int | None = Field(default=None, gt=0)
     output_tokens: int | None = Field(default=None, gt=0)
     total_tokens: int | None = Field(default=None, gt=0)
     timeout_seconds: float | None = Field(default=None, gt=0)
-    """Wall-clock bound for one invocation, enforced by the runtime (the agent is cancelled, then drained)."""
+    """1 回の呼び出しの実時間の上限。SDK ではなくランタイムが監視し、超過時はエージェントに停止を要求する。"""
 
     def to_limits(self) -> dict[str, int]:
+        """SDK の ``Limits`` に渡す辞書（``timeout_seconds`` はランタイム側で扱うので除く）。"""
         return {k: v for k, v in self.model_dump(exclude={"timeout_seconds"}).items() if v is not None}
 
 
 class AgentDefinition(_Strict):
-    """The validated contents of one ``agent.toml``."""
+    """1 つの ``agent.toml`` を検証した結果。"""
 
     name: str = Field(pattern=AGENT_NAME_PATTERN.pattern)
     description: str = ""
@@ -220,10 +229,10 @@ class AgentDefinition(_Strict):
     model: ModelSpec = Field(default_factory=ModelSpec)
     tools: list[NonBlankStr] = Field(default_factory=list)
     skills: list[NonBlankStr] | None = None
-    """``None`` means "use ``./skills`` if it exists"; an empty list disables skills explicitly."""
+    """``None`` は「``./skills`` があれば使う」。空リストはスキルを明示的に無効化する。"""
     subagents: list[str] = Field(default_factory=list)
     mcp_servers: dict[str, dict[str, Any]] | NonBlankStr = Field(default_factory=dict)
-    """Either an ``mcpServers``-style mapping (server name → MCPServerConfig) or a path to a JSON file."""
+    """``mcpServers`` 形式のマッピング（サーバー名 → MCPServerConfig）か、その JSON ファイルへのパス。"""
     context: ContextSpec = Field(default_factory=ContextSpec)
     session: SessionSpec = Field(default_factory=SessionSpec)
     structured_output: StructuredOutputSpec | None = None
@@ -244,27 +253,33 @@ class AgentDefinition(_Strict):
 
 
 class RuntimeSection(_Strict):
+    """``[runtime]`` テーブル。"""
+
     agents_dir: NonBlankStr = "./agents"
     default_agent: NonBlankStr | None = None
     enabled_agents: list[NonBlankStr] | None = None
-    """``None`` publishes every agent under ``agents_dir``."""
+    """``None`` なら ``agents_dir`` 配下の全エージェントを公開する。"""
     max_subagent_depth: int = Field(default=3, ge=1, le=10)
 
 
 class ModelDefaults(_Strict):
+    """``[model]`` テーブル（runtime.toml 側）。``[model]`` を持たないエージェントが使う既定。"""
+
     default_id: NonBlankStr = "bedrock/global.anthropic.claude-opus-5"
 
 
 class ServerSection(_Strict):
+    """``[server]`` テーブル。"""
+
     host: NonBlankStr | None = None
-    """``None`` lets ``BedrockAgentCoreApp.run`` choose (0.0.0.0 inside a container, else 127.0.0.1)."""
+    """``None`` なら ``BedrockAgentCoreApp.run`` に任せる（コンテナ内は 0.0.0.0、それ以外は 127.0.0.1）。"""
     port: int = Field(default=8080, ge=1, le=65535)
     log_file: NonBlankStr | None = None
-    """Also write the process log (runtime, Strands, uvicorn, warnings) to this file, relative to runtime.toml."""
+    """プロセスのログ（ランタイム・Strands・uvicorn・警告）をこのファイルにも書く。runtime.toml からの相対パス。"""
 
 
 class RuntimeConfig(_Strict):
-    """The validated contents of ``runtime.toml``."""
+    """1 つの ``runtime.toml`` を検証した結果。"""
 
     runtime: RuntimeSection = Field(default_factory=RuntimeSection)
     model: ModelDefaults = Field(default_factory=ModelDefaults)
@@ -273,6 +288,7 @@ class RuntimeConfig(_Strict):
 
     @model_validator(mode="after")
     def _session_not_inherit(self) -> RuntimeConfig:
+        # ``inherit`` は agent.toml が runtime.toml を参照するための値なので、参照先である runtime.toml には書けない。
         if self.session.backend == "inherit":
             raise ValueError("runtime.toml [session].backend cannot be 'inherit'")
         return self

@@ -1,4 +1,4 @@
-"""Client for a runtime reachable over plain HTTP (``strands-runtime serve`` or the Docker image)."""
+"""HTTP で直接到達できるランタイム（``strands-runtime serve`` や Docker イメージ）向けのクライアント。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import httpx
 
 from strands_runtime.client.base import AgentClient, InvocationError, iter_sse_events
 
+# AgentCore がセッションの識別に使うヘッダー。他の基盤では任意で、ペイロードの session_id と同じ値を入れる。
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
 
 
@@ -21,7 +22,7 @@ class HttpClient(AgentClient):
         headers: dict[str, str] | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        """``transport`` lets tests (or embedders) hand in e.g. ``httpx.ASGITransport(app)``."""
+        """``transport`` はテストや組み込み用途で、``httpx.ASGITransport(app)`` などを差し込むためのもの。"""
         self._client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers, transport=transport)
 
     def close(self) -> None:
@@ -45,6 +46,7 @@ class HttpClient(AgentClient):
         payload = self._payload(prompt, agent, session_id, actor_id, invocation_state)
         headers = {SESSION_HEADER: session_id} if session_id else {}
         with self._client.stream("POST", "/invocations", json=payload, headers=headers) as response:
+            # 400 / 404 / 409 などはイベントではなく JSON のエラー本文で返るので、本文ごと例外にする。
             if response.status_code >= 400:
                 body = response.read().decode("utf-8", errors="replace")
                 raise InvocationError(f"HTTP {response.status_code}", body)

@@ -1,8 +1,8 @@
-"""The set of agent definitions a runtime process knows about.
+"""ランタイムプロセスが知っているエージェント定義の集合。
 
-A registry distinguishes *published* agents (those clients may invoke by name) from *loaded*
-agents (published ones plus everything reachable through ``subagents``). ``enabled_agents`` in
-``runtime.toml`` narrows the published set so the same image can back several AgentCore Runtimes.
+「公開する」エージェント（クライアントが名前で呼べるもの）と「読み込む」エージェント
+（公開するものと、そこから ``subagents`` で到達できるものすべて）を区別する。
+``runtime.toml`` の ``enabled_agents`` で公開範囲を絞れば、同じイメージを複数のデプロイで使い分けられる。
 """
 
 from __future__ import annotations
@@ -23,11 +23,12 @@ class Registry:
 
     @classmethod
     def load(cls, config: RuntimeConfig, base_dir: Path) -> Registry:
-        """Discover every agent directory under ``runtime.agents_dir`` and apply ``enabled_agents``."""
+        """``runtime.agents_dir`` 配下のエージェントディレクトリをすべて読み、``enabled_agents`` を適用する。"""
         agents_dir = (base_dir / config.runtime.agents_dir).resolve()
         if not agents_dir.is_dir():
             raise DefinitionError("agents directory not found", source=str(agents_dir))
 
+        # ``agent.toml`` を持つサブディレクトリだけをエージェントとみなす（README などの同居を許す）。
         agents: dict[str, ResolvedAgent] = {}
         for child in sorted(agents_dir.iterdir()):
             if child.is_dir() and (child / AGENT_FILE).is_file():
@@ -48,8 +49,9 @@ class Registry:
         if default is not None and default not in published:
             raise DefinitionError(f"default_agent {default!r} is not a published agent")
 
+        # まず全定義で参照の整合性を検証してから、公開対象から到達できる定義だけに絞る。
+        # 無関係な定義が壊れていても、このデプロイの起動には影響させない。
         registry = cls(agents, published)
-        # Keep only what is reachable so an unrelated broken definition cannot affect this runtime.
         reachable = registry._reachable(published)
         return cls({name: agents[name] for name in reachable}, published)
 
@@ -64,19 +66,20 @@ class Registry:
         return name in self._agents
 
     def get(self, name: str) -> ResolvedAgent:
-        """A published agent, as requested by a client."""
+        """クライアントが名前で要求した、公開中のエージェント。"""
         if name not in self._published:
             raise UnknownAgentError(name, self._published)
         return self._agents[name]
 
     def dependency(self, name: str) -> ResolvedAgent:
-        """Any loaded agent, for ``subagents`` resolution (may be unpublished)."""
+        """``subagents`` の解決に使う、読み込み済みのエージェント（公開していなくてもよい）。"""
         try:
             return self._agents[name]
         except KeyError as exc:
             raise DefinitionError(f"subagent {name!r} is not defined") from exc
 
     def _reachable(self, roots: list[str]) -> list[str]:
+        """``roots`` から ``subagents`` をたどって到達できる名前（重複なし、深さ優先）。"""
         seen: list[str] = []
         stack = list(roots)
         while stack:
@@ -88,6 +91,7 @@ class Registry:
         return seen
 
     def _validate_graph(self) -> None:
+        """``subagents`` の参照先が存在し、循環していないことを確認する。"""
         for agent in self._agents.values():
             for sub in agent.definition.subagents:
                 if sub not in self._agents:

@@ -1,4 +1,4 @@
-"""The ``s3`` session backend, exercised against moto's in-process S3 (no network, no external store)."""
+"""``s3`` セッションバックエンドを moto のプロセス内 S3 で動かす（ネットワークも外部ストアも不要）。"""
 
 from __future__ import annotations
 

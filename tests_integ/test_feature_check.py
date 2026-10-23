@@ -1,6 +1,6 @@
-"""Live checks against the examples/feature-check agents (OpenRouter). Skipped without OPENROUTER_API_KEY.
+"""examples/feature-check のエージェントを実モデル（OpenRouter）で動かす確認。OPENROUTER_API_KEY がなければスキップする。
 
-Run with:  uv run --env-file .env pytest tests_integ -q
+実行方法:  uv run --env-file .env pytest tests_integ -q
 """
 
 from __future__ import annotations

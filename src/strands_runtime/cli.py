@@ -1,4 +1,4 @@
-"""``strands-runtime`` command line: validate, list, run, serve."""
+"""``strands-runtime`` コマンド。validate / list / run / serve。"""
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """終了コードを返す。定義や参照の問題は ``StrandsRuntimeError`` として 1 行のエラーにまとめる。"""
     args = build_parser().parse_args(argv)
     configure_logging(logging.DEBUG if args.verbose else logging.WARNING)
     try:
@@ -66,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _validate(runtime: Runtime, *, connect_mcp: bool = False) -> int:
+    """定義の読み込み（Runtime.load で済んでいる）に加えて、コード参照・スキル・（任意で）MCP 接続を確かめる。"""
     problems: list[str] = []
     for agent in runtime.registry:
         problems.extend(_check_references(agent))
@@ -81,7 +83,7 @@ def _validate(runtime: Runtime, *, connect_mcp: bool = False) -> int:
 
 
 def _check_references(agent: ResolvedAgent) -> list[str]:
-    """Import everything a definition points at without building an agent (no credentials or MCP needed)."""
+    """定義が指すコードをすべて import してみる。Agent は組み立てないので、資格情報も MCP サーバーも要らない。"""
     problems: list[str] = []
     d = agent.definition
     refs = [*agent.plugins, *(i for i in agent.interventions if not i.endswith(".cedar"))]
@@ -94,6 +96,7 @@ def _check_references(agent: ResolvedAgent) -> list[str]:
             load_attribute(ref)
         except StrandsRuntimeError as exc:
             problems.append(f"{d.name}: {exc}")
+    # ツールのモジュール参照は ``pkg.module`` だけ（``:func`` なし）もあり得るので、モジュール部分の import だけ試す。
     for tool in agent.tools:
         if not is_path_reference(tool):
             module = tool.split(":", 1)[0]
@@ -105,20 +108,20 @@ def _check_references(agent: ResolvedAgent) -> list[str]:
 
 
 def _check_skills(agent: ResolvedAgent) -> list[str]:
-    """Parse every SKILL.md strictly (name/description present, name matches its directory)."""
+    """``SKILL.md`` を厳格に解析する（name / description の有無、name とディレクトリ名の一致）。"""
     if not agent.skills:
         return []
     from strands.vended_plugins.skills import AgentSkills
 
     try:
         AgentSkills(skills=list(agent.skills), strict=True)
-    except Exception as exc:  # the SDK raises plain ValueError/OSError variants here
+    except Exception as exc:  # SDK は ValueError / OSError 系をそのまま送出する
         return [f"{agent.name}: skills: {exc}"]
     return []
 
 
 def _check_mcp(agent: ResolvedAgent) -> list[str]:
-    """Start each MCP server once and list its tools; slow, so only on request."""
+    """各 MCP サーバーを 1 度起動してツール一覧を取る。時間がかかるので ``--mcp`` 指定時だけ。"""
     if not agent.mcp_servers:
         return []
     from strands.tools.mcp import MCPClient
@@ -144,6 +147,7 @@ def _list(runtime: Runtime) -> int:
 
 
 async def _run(runtime: Runtime, args: argparse.Namespace) -> int:
+    """サーバーを立てずに 1 回呼び出す。既定はテキストだけを表示し、``--json`` でイベントを 1 行ずつ出す。"""
     request = InvocationRequest(
         agent=args.agent,
         prompt=args.prompt,
@@ -175,7 +179,8 @@ def _serve(runtime: Runtime, args: argparse.Namespace) -> int:
     from strands_runtime.server import create_app, run_app
 
     port = args.port or runtime.config.server.port
-    # Mirror BedrockAgentCoreApp.run's host detection so the banner shows the real bind address.
+    # 表示用の host は BedrockAgentCoreApp.run と同じ規則で決める（コンテナ内は 0.0.0.0、それ以外は 127.0.0.1）。
+    # 実際のバインド先の決定は app.run に任せるので、ここで決めた値は渡さない。
     in_container = Path("/.dockerenv").exists() or bool(os.environ.get("DOCKER_CONTAINER"))
     host = args.host or runtime.config.server.host or ("0.0.0.0" if in_container else "127.0.0.1")
     print(f"strands-runtime: serving {', '.join(runtime.registry.published)} at http://{host}:{port}", flush=True)

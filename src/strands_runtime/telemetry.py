@@ -1,10 +1,10 @@
-"""Wire Strands' OpenTelemetry spans to an exporter when, and only when, the environment asks for one.
+"""環境が求めたときにだけ、Strands の OpenTelemetry スパンをエクスポーターに配線する。
 
-Strands instruments the agent loop itself; this module only decides where spans go:
+計装そのものは Strands が行う。このモジュールが決めるのはスパンの送り先だけ。
 
-- Under ``opentelemetry-instrument`` (AgentCore with ADOT) a global ``TracerProvider`` already exists
-  and Strands uses it automatically, so nothing is done here, whatever ``OTEL_TRACES_EXPORTER`` says.
-- Otherwise ``OTEL_TRACES_EXPORTER=otlp|console`` (comma-separated) selects exporters; unset means off.
+- ``opentelemetry-instrument`` 配下（AgentCore の ADOT など）では既にグローバルな ``TracerProvider`` があり、
+  Strands はそれを自動で使う。``OTEL_TRACES_EXPORTER`` の値に関係なく、ここでは何もしない。
+- それ以外では ``OTEL_TRACES_EXPORTER=otlp|console``（カンマ区切り可）でエクスポーターを選ぶ。未設定なら送らない。
 """
 
 from __future__ import annotations
@@ -21,11 +21,14 @@ _configured = False
 
 
 def setup_telemetry() -> None:
+    """プロセスで 1 度だけ実行する。2 度目以降は何もしない。"""
     global _configured
     if _configured:
         return
     _configured = True
 
+    # ``ProxyTracerProvider`` は「まだ誰も設定していない」ことを表す既定の実装。
+    # それ以外が入っていれば外部（ADOT など）が設定済みなので、二重にエクスポーターを付けない。
     if not isinstance(trace.get_tracer_provider(), ProxyTracerProvider):
         logger.debug("global TracerProvider already set; leaving telemetry to it")
         return

@@ -1,4 +1,4 @@
-"""Declarative agent definitions: TOML schema, filesystem loader and registry."""
+"""宣言的なエージェント定義。TOML のスキーマ、ファイルシステムからの読み込み、レジストリ。"""
 
 from strands_runtime.definitions.loader import ResolvedAgent, load_agent, load_runtime_config
 from strands_runtime.definitions.registry import Registry

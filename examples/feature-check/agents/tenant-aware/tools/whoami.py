@@ -1,3 +1,5 @@
+"""``invocation_state`` の値をツールが読めることを確認するためのツール。``context=True`` で ToolContext を受け取る。"""
+
 from strands import ToolContext, tool
 
 

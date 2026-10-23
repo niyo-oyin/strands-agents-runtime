@@ -1,4 +1,4 @@
-"""Tiny stdio MCP server used to verify the runtime's MCP integration."""
+"""ランタイムの MCP 連携を確認するための、最小の stdio MCP サーバー。agent.toml の [mcp_servers.demo] から起動される。"""
 
 from mcp.server.fastmcp import FastMCP
 

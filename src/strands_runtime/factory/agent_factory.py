@@ -1,4 +1,4 @@
-"""Assemble a ``strands.Agent`` from a :class:`ResolvedAgent` for one invocation."""
+""":class:`ResolvedAgent` から、1 回の呼び出しに使う ``strands.Agent`` を組み立てる。"""
 
 from __future__ import annotations
 
@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 
 
 class AgentFactory:
-    """Builds agents per request; caches only session-independent resources.
+    """リクエストごとに ``Agent`` を作る。プロセス内で共有するのはセッションに依存しない資源だけ。
 
-    A ``strands.Agent`` holds conversation state, so one is created for every invocation and the
-    ``SessionManager`` restores history. MCP clients and storage backends are shared across builds.
+    ``strands.Agent`` は会話履歴を持つオブジェクトなので毎回新しく作り、履歴の復元は ``SessionManager`` に任せる。
+    MCP クライアントとストレージは呼び出しをまたいで使い回す。
     """
 
     def __init__(self, registry: Registry, config: RuntimeConfig, *, base_dir: Path) -> None:
@@ -48,19 +48,24 @@ class AgentFactory:
         return self._registry
 
     def build(self, name: str, session: SessionContext, *, hooks: Sequence[HookProvider] = ()) -> Agent:
-        """Build the published agent ``name`` for ``session``; ``hooks`` are attached to every agent in the tree."""
+        """公開中のエージェント ``name`` を ``session`` 用に組み立てる。``hooks`` はツリー内の全エージェントに付く。"""
         return self._build(self._registry.get(name), session, depth=0, persist=True, hooks=list(hooks))
 
     def _build(
         self, resolved: ResolvedAgent, session: SessionContext, *, depth: int, persist: bool, hooks: list[HookProvider]
     ) -> Agent:
-        """``persist=False`` builds a subagent: no session manager, so ``as_tool()`` can reset it per call."""
+        """``persist=False`` はサブエージェント用。
+
+        セッションマネージャーを付けない。
+        ``as_tool()`` は呼び出しごとに子の状態をリセットするため、永続化と両立しない。
+        """
         d = resolved.definition
         if depth > self._config.runtime.max_subagent_depth:
             raise DefinitionError(
                 f"subagent nesting deeper than {self._config.runtime.max_subagent_depth} at {d.name!r}"
             )
 
+        # ツールは「文字列参照」「MCP クライアント」「ツール化したサブエージェント」を 1 つのリストにして SDK に渡す。
         tools: list[Any] = [*resolved.tools, *self._mcp.get(resolved)]
         for sub_name in d.subagents:
             sub = self._registry.dependency(sub_name)
@@ -79,6 +84,7 @@ class AgentFactory:
         session_manager = (
             self._sessions.build(effective_session_spec(d.session, self._config.session), session) if persist else None
         )
+        # ``session.id`` と ``user.id`` は可視化ツールがセッション・利用者のグルーピングに使う属性名。
         trace_attributes: dict[str, str] = {
             "session.id": session.session_id,
             "user.id": session.actor_id,
@@ -97,7 +103,7 @@ class AgentFactory:
             session_manager=session_manager,
             structured_output_model=structured_output_model,
             interventions=build_interventions(resolved) or None,
-            callback_handler=None,
+            callback_handler=None,  # 出力は stream_async のイベントで扱うので、標準出力への表示は無効にする
             hooks=list(hooks) or None,
             trace_attributes=trace_attributes,
         )

@@ -1,4 +1,4 @@
-"""Read ``runtime.toml`` and agent directories from disk into validated, path-resolved objects."""
+"""``runtime.toml`` とエージェントディレクトリを読み、検証とパス解決を済ませたオブジェクトにする。"""
 
 from __future__ import annotations
 
@@ -18,14 +18,15 @@ from strands_runtime.errors import DefinitionError
 AGENT_FILE = "agent.toml"
 DEFAULT_SKILLS_DIR = "skills"
 
+# ``${VAR}`` と ``${VAR:-default}`` に一致する。
 _ENV_PATTERN = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}")
 
 
 def expand_env(value: Any, *, source: str) -> Any:
-    """Recursively expand ``${VAR}`` and ``${VAR:-default}`` in every string of a TOML tree.
+    """TOML ツリー内のすべての文字列で ``${VAR}`` / ``${VAR:-default}`` を環境変数に展開する。
 
-    A reference to an unset variable without a default is an error: silently keeping the literal
-    would surface much later as a confusing auth or path failure.
+    既定値のない未設定の変数はエラーにする。
+    文字列をそのまま残すと、後で認証失敗やパス不正として現れ、原因が分かりにくくなるため。
     """
     if isinstance(value, str):
 
@@ -47,6 +48,7 @@ def expand_env(value: Any, *, source: str) -> Any:
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
+    """TOML を読み込み、環境変数を展開して返す。読めない場合はファイル名付きのエラーにする。"""
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
@@ -58,6 +60,7 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 
 def _describe(error: ValidationError) -> str:
+    """pydantic の検証エラーを「キーのパス: 理由」を ``;`` で連ねた 1 行にする。"""
     lines = []
     for item in error.errors(include_url=False):
         loc = ".".join(str(part) for part in item["loc"])
@@ -66,11 +69,11 @@ def _describe(error: ValidationError) -> str:
 
 
 def load_runtime_config(path: Path) -> RuntimeConfig:
-    """Load and validate ``runtime.toml``. A missing file yields the defaults.
+    """``runtime.toml`` を読み込んで検証する。ファイルがなければ既定値を返す。
 
-    Deployment-specific differences (published agents, session backend, default model) live in separate
-    ``runtime.toml`` files selected with ``STRANDS_RUNTIME_CONFIG``; nothing in here is overridden from the
-    environment except through ``${VAR}`` references written in the file itself.
+    デプロイごとの差分（公開するエージェント、セッションバックエンド、既定モデル）は別の ``runtime.toml`` として
+    用意し、``STRANDS_RUNTIME_CONFIG`` でどれを読むかを選ぶ。
+    ファイルに書いた ``${VAR}`` 以外に、環境変数で値を上書きする経路はない。
     """
     if not path.exists():
         return RuntimeConfig()
@@ -82,17 +85,17 @@ def load_runtime_config(path: Path) -> RuntimeConfig:
 
 
 def is_path_reference(value: str) -> bool:
-    """Whether a tool/plugin string denotes a file rather than an importable module.
+    """ツールやプラグインの参照文字列が、モジュールではなくファイルを指しているかを判定する。
 
-    Mirrors the heuristic Strands uses for tool strings: explicit relative/absolute prefixes or a
-    ``.py`` suffix mean a file; everything else is ``pkg.module[:attr]``.
+    Strands がツール文字列に使う規則と同じで、``./`` ``../`` ``/`` ``~`` で始まるか ``.py`` で終わればファイル、
+    それ以外は ``pkg.module[:attr]`` とみなす。
     """
     head = value.split(":", 1)[0]
     return head.startswith(("./", "../", "/", "~")) or head.endswith(".py")
 
 
 def _resolve_path_reference(value: str, base_dir: Path) -> str:
-    """Absolutize the path part of ``path[:attr]`` against ``base_dir``."""
+    """``path[:attr]`` のパス部分を ``base_dir`` 基準の絶対パスにする。``:attr`` はそのまま残す。"""
     path_part, sep, attr = value.partition(":")
     resolved = (base_dir / Path(path_part).expanduser()).resolve()
     return f"{resolved}{sep}{attr}"
@@ -100,11 +103,12 @@ def _resolve_path_reference(value: str, base_dir: Path) -> str:
 
 @dataclass(frozen=True)
 class ResolvedAgent:
-    """An :class:`AgentDefinition` plus everything the factory needs from the filesystem.
+    """:class:`AgentDefinition` に、ファイルシステムから集めた情報を加えたもの。factory はこれを受け取る。
 
-    All paths are absolute: the list fields below replace the definition's relative tool/skill/plugin
-    references, and path references nested in ``definition`` (``model.module``, ``structured_output.model``)
-    have been absolutized in place. ``mcp_servers`` is always a mapping (``mcp.json`` has been read).
+    パスはすべて絶対パス。
+    下のリスト項目は定義の相対参照（ツール・スキル・プラグイン）を解決したもので、
+    定義の内側にある参照（``model.module``、``structured_output.model``）は ``definition`` の中で絶対化済み。
+    ``mcp_servers`` は常にマッピング（``mcp.json`` 指定の場合は読み込み済み）。
     """
 
     definition: AgentDefinition
@@ -122,7 +126,7 @@ class ResolvedAgent:
 
 
 def load_agent(directory: Path) -> ResolvedAgent:
-    """Load one agent directory (``agent.toml`` + ``prompt.md`` + optional ``skills/``, ``mcp.json``)."""
+    """エージェントディレクトリ（``agent.toml`` + ``prompt.md`` + 任意の ``skills/``、``mcp.json``）を 1 つ読み込む。"""
     directory = directory.resolve()
     agent_file = directory / AGENT_FILE
     data = _read_toml(agent_file)
@@ -131,6 +135,7 @@ def load_agent(directory: Path) -> ResolvedAgent:
     except ValidationError as exc:
         raise DefinitionError(_describe(exc), source=str(agent_file)) from exc
 
+    # 名前はディレクトリ名と一致させる。レジストリがディレクトリ名で引き、ツール名にもなるため。
     if definition.name != directory.name:
         raise DefinitionError(
             f"name {definition.name!r} must match the directory name {directory.name!r}", source=str(agent_file)
@@ -144,11 +149,13 @@ def load_agent(directory: Path) -> ResolvedAgent:
     if not system_prompt.strip():
         raise DefinitionError("prompt file is empty", source=str(prompt_path))
 
+    # ツール文字列は Strands のローダーにそのまま渡すので、相対パスだけを絶対化しておく。
     tools = [_resolve_path_reference(t, directory) if is_path_reference(t) else t for t in definition.tools]
     for tool in tools:
         if is_path_reference(tool) and not Path(tool.split(":", 1)[0]).exists():
             raise DefinitionError(f"tool file not found: {tool}", source=str(agent_file))
 
+    # skills 未指定なら ``./skills`` があれば使う。URL（SKILL.md の生 URL）はそのまま通す。
     if definition.skills is None:
         default_skills = directory / DEFAULT_SKILLS_DIR
         skills = [str(default_skills)] if default_skills.is_dir() else []
@@ -162,13 +169,14 @@ def load_agent(directory: Path) -> ResolvedAgent:
 
     mcp_servers = _load_mcp_servers(definition.mcp_servers, directory, agent_file)
 
+    # ``.cedar`` はポリシーファイルなので、``./`` が付いていなくてもパスとして扱う。
     interventions = [
         _resolve_path_reference(i, directory) if is_path_reference(i) or i.endswith(".cedar") else i
         for i in definition.interventions
     ]
     plugins = [_resolve_path_reference(p, directory) if is_path_reference(p) else p for p in definition.plugins]
 
-    # Code references nested inside the definition (model.module, structured_output.model) are resolved in place.
+    # 定義の内側にあるコード参照（model.module、structured_output.model）も、同じ規則で絶対化してから差し替える。
     updates: dict[str, Any] = {}
     if definition.model.module and is_path_reference(definition.model.module):
         module = _resolve_path_reference(definition.model.module, directory)
@@ -194,6 +202,7 @@ def load_agent(directory: Path) -> ResolvedAgent:
 def _load_mcp_servers(
     value: dict[str, dict[str, Any]] | str, directory: Path, agent_file: Path
 ) -> dict[str, dict[str, Any]]:
+    """``mcp_servers`` をマッピングに正規化する。文字列ならファイルを読み、各サーバーの ``cwd`` を絶対化する。"""
     if isinstance(value, str):
         path = (directory / value).resolve()
         try:
@@ -203,6 +212,7 @@ def _load_mcp_servers(
         except json.JSONDecodeError as exc:
             raise DefinitionError(f"invalid JSON: {exc}", source=str(path)) from exc
         raw = expand_env(raw, source=str(path))
+        # 標準の ``{"mcpServers": {...}}`` でも、サーバー定義だけのオブジェクトでも受け付ける。
         servers = raw.get("mcpServers", raw) if isinstance(raw, dict) else None
         if not isinstance(servers, dict):
             raise DefinitionError("expected an object with an 'mcpServers' key", source=str(path))
@@ -214,6 +224,7 @@ def _load_mcp_servers(
         if not isinstance(cfg, dict):
             raise DefinitionError(f"mcp_servers.{name} must be a table", source=str(agent_file))
         cfg = dict(cfg)
+        # stdio サーバーの作業ディレクトリは、プロセスのカレントではなくエージェントディレクトリ基準にする。
         if "cwd" in cfg and isinstance(cfg["cwd"], str):
             cfg["cwd"] = str((directory / Path(cfg["cwd"]).expanduser()).resolve())
         resolved[name] = cfg

@@ -51,7 +51,7 @@ def test_normalize_text_messages_and_reasoning_option() -> None:
     run = run_for()
     assert run.normalize({"data": "hi", "delta": {}}) == [TextEvent(text="hi")]
     assert run.normalize({"data": "", "delta": {}}) == []
-    assert run.normalize({"reasoningText": "thinking", "delta": {}}) == []  # off by default
+    assert run.normalize({"reasoningText": "thinking", "delta": {}}) == []  # 既定では出さない
     assert run_for(include_reasoning=True).normalize({"reasoningText": "thinking"}) == [ReasoningEvent(text="thinking")]
     tool_use_msg = {
         "role": "assistant",
@@ -82,7 +82,7 @@ def test_decode_prompt_turns_base64_media_into_bytes() -> None:
     decoded = decode_prompt(payload)
     assert decoded[0] == {"text": "what is this?"}  # type: ignore[index]
     assert decoded[1]["image"]["source"]["bytes"] == b"\x89PNG"  # type: ignore[index]
-    assert payload[1]["image"]["source"]["bytes"] != b"\x89PNG"  # input is not mutated
+    assert payload[1]["image"]["source"]["bytes"] != b"\x89PNG"  # 入力は書き換えない
     assert decode_prompt("plain") == "plain"
 
 
@@ -139,13 +139,13 @@ async def test_same_session_is_rejected_while_running(runtime: Runtime) -> None:
     with pytest.raises(SessionBusyError):
         await anext(runtime.invoker.stream(InvocationRequest(prompt="again", session_id="busy-1")))
     await first.aclose()
-    # Closing the abandoned stream frees the session again.
+    # 放棄したストリームを閉じるとセッションは再び空く。
     events = await collect(runtime, InvocationRequest(prompt="again", session_id="busy-1"))
     assert isinstance(events[-1], ResultEvent)
 
 
 async def test_model_failure_becomes_error_event(runtime: Runtime) -> None:
-    fakes.script()  # no scripted response → the fake model raises
+    fakes.script()  # 台本が空なので偽モデルは例外を投げる
     events = await collect(runtime, InvocationRequest(prompt="hi"))
     assert isinstance(events[-1], ErrorEvent) and events[-1].error_type == "AssertionError"
     assert sum(isinstance(e, ErrorEvent) for e in events) == 1
@@ -177,7 +177,7 @@ async def test_timeout_cancels_and_reports_timeout(tmp_path: Path) -> None:
 async def test_structured_output_has_its_own_stop_reason(tmp_path: Path) -> None:
     write_agent(tmp_path / "agents", "a", toml_extra='[structured_output]\nmodel = "tests.schemas:Answer"\n')
     runtime = Runtime.load(write_runtime(tmp_path))
-    # Strands asks the model for structured output as a tool call named after the schema.
+    # Strands は構造化出力を、スキーマ名のツール呼び出しとしてモデルに求める。
     fakes.script(fakes.tool_use("Answer", {"answer": "42"}))
     result = await runtime.invoker.invoke(InvocationRequest(agent="a", prompt="hi"))
     assert isinstance(result, ResultEvent)
@@ -226,7 +226,7 @@ async def test_usage_is_aggregated_across_subagents(tmp_path: Path) -> None:
     write_agent(agents, "parent", toml_extra='subagents = ["child"]\n', with_tool=False)
     write_agent(agents, "child", with_tool=False)
     runtime = Runtime.load(write_runtime(tmp_path))
-    # parent asks child (one model call in the child), then answers: 3 model calls of 15 tokens each.
+    # parent が child を呼び（child 内でモデル呼び出し 1 回）、その後に回答する。計 3 回のモデル呼び出し、各 15 トークン。
     fakes.script(fakes.tool_use("child", {"input": "hello"}), fakes.text("child says hi"), fakes.text("done"))
 
     result = await runtime.invoker.invoke(InvocationRequest(agent="parent", prompt="go", session_id="usage-1"))

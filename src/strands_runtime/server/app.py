@@ -1,8 +1,8 @@
-"""``BedrockAgentCoreApp`` wiring.
+"""``BedrockAgentCoreApp`` の配線。
 
-The same app serves local development, Docker, any container platform and AgentCore Runtime: AgentCore's SDK implements the
-service contract (ports, ``/ping``, SSE framing, session header parsing), this module only maps the
-runtime's payload to an invocation.
+ローカル開発、Docker、任意のコンテナ基盤、AgentCore Runtime のすべてで同じアプリを使う。
+HTTP 契約（ポート、``/ping``、SSE の枠組み、セッションヘッダーの解釈）は AgentCore の SDK が実装しているので、
+このモジュールはペイロードを呼び出しに対応付けるだけ。
 """
 
 from __future__ import annotations
@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 def create_app(runtime: Runtime) -> BedrockAgentCoreApp:
+    """``POST /invocations`` のエントリポイントを持つアプリを作る。"""
     app = BedrockAgentCoreApp()
 
+    # 第 2 引数の名前が ``context`` のときだけ SDK が RequestContext（セッション ID、許可されたヘッダー）を渡す。
     @app.entrypoint
     async def invocations(payload: Any, context: RequestContext) -> Any:
         try:
@@ -38,6 +40,7 @@ def create_app(runtime: Runtime) -> BedrockAgentCoreApp:
             )
             raise HTTPException(status_code=400, detail=f"invalid payload: {detail}") from exc
 
+        # エージェント名の解決はストリームを始める前に行い、未知の名前は 404 で返す。
         try:
             runtime.invoker.resolve_agent_name(request)
         except UnknownAgentError as exc:
@@ -47,8 +50,9 @@ def create_app(runtime: Runtime) -> BedrockAgentCoreApp:
 
         if request.stream:
             stream = runtime.invoker.stream(request, session_id=header_session_id)
+            # 最初のイベントを取り出すまでに SessionBusyError が出るので、SSE を始める前に 409 を返せる。
             try:
-                first = await anext(stream)  # UnknownAgent/SessionBusy surface here, before any SSE frame
+                first = await anext(stream)
             except SessionBusyError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             return _sse(first, stream)
@@ -65,7 +69,7 @@ def create_app(runtime: Runtime) -> BedrockAgentCoreApp:
 
 
 async def _sse(first: Any, rest: AsyncIterator[Any]) -> AsyncIterator[dict[str, Any]]:
-    """Each yielded mapping becomes one ``data: {...}`` SSE frame (framing done by the AgentCore SDK)."""
+    """yield した辞書 1 つが SSE の ``data: {...}`` フレーム 1 つになる（枠組みは AgentCore SDK が付ける）。"""
     yield first.model_dump(mode="json")
     async for event in rest:
         yield event.model_dump(mode="json")
@@ -79,10 +83,10 @@ def run_app(
     host: str | None = None,
     verbose: bool = False,
 ) -> None:
-    """Configure logging (stderr + optional ``[server] log_file``) and serve until interrupted.
+    """ログ（標準エラー出力と、あれば ``[server] log_file``）を設定し、停止されるまでサーバーを動かす。
 
-    ``log_config=None`` stops uvicorn from installing its own handlers so its records reach the same
-    root logger, and therefore the same file, as everything else.
+    ``log_config=None`` で uvicorn 独自のハンドラー設定を止め、uvicorn のログも同じルートロガー
+    （したがって同じファイル）に流す。
     """
     log_file = runtime.config.server.log_file
     configure_logging(
@@ -101,5 +105,6 @@ def run_app(
 
 
 def main() -> None:
+    """``python -m strands_runtime.server`` の入口。"""
     runtime = Runtime.load()
     run_app(create_app(runtime), runtime)

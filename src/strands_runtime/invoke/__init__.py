@@ -1,4 +1,4 @@
-"""Run one invocation against an agent and normalize what it streams."""
+"""エージェントへの 1 回の呼び出しを実行し、流れてくるイベントを正規化する。"""
 
 from strands_runtime.invoke.invoker import InvocationRequest, Invoker
 

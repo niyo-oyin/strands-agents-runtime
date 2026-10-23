@@ -1,3 +1,5 @@
+"""``[limits] turns`` の確認用。ツール呼び出しを 1 回起こすだけの単純なツール。"""
+
 import random
 
 from strands import tool

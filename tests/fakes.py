@@ -1,7 +1,7 @@
-"""A scripted ``strands.models.Model`` so tests exercise the real agent loop without a provider.
+"""応答を台本で与える ``strands.models.Model``。プロバイダーなしで本物のエージェントループを回すために使う。
 
-Agent definitions under test point at this module with ``[model] module = "tests.fakes:make_model"``;
-tests set the script with :func:`script` before invoking.
+テスト対象のエージェント定義は ``[model] module = "tests.fakes:make_model"`` でこのモジュールを指し、
+テスト側は呼び出す前に :func:`script` で台本を設定する。
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ _CHUNK_DELAY = 0.0
 
 
 def script(*responses: Message) -> None:
-    """Set the assistant messages the next agents will produce, one per model call."""
+    """これ以降のモデル呼び出しが返すアシスタントメッセージを、呼び出し 1 回につき 1 つずつ設定する。"""
     global _CALLS
     _SCRIPT[:] = list(responses)
     _SEEN.clear()
@@ -31,13 +31,13 @@ def script(*responses: Message) -> None:
 
 
 def set_chunk_delay(seconds: float) -> None:
-    """Sleep this long before each streamed chunk (to exercise timeouts and cancellation)."""
+    """ストリームの各チャンクの前にこの秒数だけ待つ（タイムアウトとキャンセルを試すため）。"""
     global _CHUNK_DELAY
     _CHUNK_DELAY = seconds
 
 
 def seen_messages() -> list[Messages]:
-    """The message history the model received on each call (to observe session restoration)."""
+    """各呼び出しでモデルが受け取ったメッセージ履歴（セッション復元を観測するため）。"""
     return list(_SEEN)
 
 
@@ -61,7 +61,7 @@ def make_failing_model() -> FailingModel:
 
 
 class FailingModel(Model):
-    """Every call raises, so a ``[model] fallbacks`` router has to move on."""
+    """毎回例外を投げるモデル。``[model] fallbacks`` のルーターが次の候補へ進むことを確かめるために使う。"""
 
     def __init__(self) -> None:
         self.config: dict[str, Any] = {"model_id": "failing/primary", "context_window_limit": 200_000}
@@ -76,7 +76,7 @@ class FailingModel(Model):
         self, output_model: type[BaseModel], prompt: Messages, system_prompt: str | None = None, **kwargs: Any
     ) -> AsyncGenerator[dict[str, Any]]:
         raise RuntimeError("primary model is down")
-        yield {}  # pragma: no cover - makes this an async generator
+        yield {}  # pragma: no cover - この関数を非同期ジェネレーターにするためだけの行
 
     async def stream(
         self,
@@ -86,7 +86,7 @@ class FailingModel(Model):
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any]]:
         raise RuntimeError("primary model is down")
-        yield {}  # pragma: no cover - makes this an async generator
+        yield {}  # pragma: no cover - この関数を非同期ジェネレーターにするためだけの行
 
 
 class ScriptedModel(Model):

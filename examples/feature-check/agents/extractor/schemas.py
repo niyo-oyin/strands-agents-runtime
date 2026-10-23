@@ -1,3 +1,5 @@
+"""構造化出力の確認用スキーマ。agent.toml の ``[structured_output] model = "./schemas.py:ContactCard"`` から参照される。"""
+
 from pydantic import BaseModel, Field
 
 
