@@ -278,12 +278,39 @@ class ServerSection(_Strict):
     """プロセスのログ（ランタイム・Strands・uvicorn・警告）をこのファイルにも書く。runtime.toml からの相対パス。"""
 
 
+class JobsSection(_Strict):
+    """``runtime.toml`` の ``[jobs]``。ジョブのジャーナルを置く場所と、ジョブ 1 件の上限時間。"""
+
+    storage: Literal["inherit", "local", "s3"] = "inherit"
+    """``inherit`` は ``[session]`` が ``local`` / ``s3`` ならその Storage を使う。
+    それ以外（``agentcore_memory`` / ``none``）ではジャーナルを置けないので、明示しない限りジョブは無効になる。"""
+    dir: NonBlankStr | None = None
+    bucket: NonBlankStr | None = None
+    prefix: str = ""
+    region: NonBlankStr | None = None
+    max_duration_seconds: float = Field(default=28800, gt=0)
+    """基盤の上限がないローカルや ECS でジョブが際限なく走らないための安全弁。既定は 8 時間。"""
+
+    @model_validator(mode="after")
+    def _required_keys(self) -> JobsSection:
+        if self.storage == "s3" and not self.bucket:
+            raise ValueError("[jobs] storage = 's3' requires 'bucket'")
+        return self
+
+    def as_session_spec(self) -> SessionSpec:
+        """``local`` / ``s3`` の Storage は ``[session]`` と同じ作り方なので、同じ構築経路に乗せる。"""
+        return SessionSpec(
+            backend=self.storage, dir=self.dir, bucket=self.bucket, prefix=self.prefix, region=self.region
+        )
+
+
 class RuntimeConfig(_Strict):
     """1 つの ``runtime.toml`` を検証した結果。"""
 
     runtime: RuntimeSection = Field(default_factory=RuntimeSection)
     model: ModelDefaults = Field(default_factory=ModelDefaults)
     session: SessionSpec = Field(default_factory=lambda: SessionSpec(backend="local"))
+    jobs: JobsSection = Field(default_factory=JobsSection)
     server: ServerSection = Field(default_factory=ServerSection)
 
     @model_validator(mode="after")

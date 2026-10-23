@@ -68,6 +68,24 @@ result = client.invoke("続きをお願い", agent="assistant", session_id=sid)
 print(result.text, result.metrics)
 ```
 
+長時間の実行は接続を保たずにジョブとして投入し、後から進捗と結果を取る（設計文書 §7.6）。
+
+```python
+job = client.submit("…時間のかかる依頼…", agent="assistant")      # mode="job"。すぐ返る
+print(job.status().state)                                          # running / completed / failed …
+for event in job.follow(after=0):                                  # ジャーナルを再生し、実行中なら追従する
+    print(event.seq, event.type)
+result = job.result(wait=True)                                     # 終端まで待って result（失敗なら例外）
+job.cancel()                                                       # 冪等
+```
+
+```bash
+curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
+  -d '{"agent": "assistant", "prompt": "…", "mode": "job", "session_id": "<36 文字以上>"}'
+curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
+  -d '{"mode": "status", "session_id": "<同じ ID>"}'          # follow / result / cancel も同じ形
+```
+
 ## OpenAI / OpenAI 互換 API で動かす
 
 モデルは各 `agent.toml` の `[model] id` で選びます（`[model]` を省いたエージェントは `runtime.toml` の `default_id`）。
@@ -134,6 +152,8 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml ru
 - イベント: `start` → `text` / `reasoning` / `tool_use` / `tool_result` … → `result`（`stop_reason`、`text`、`structured_output`、`metrics`）または `error`。
 - `stop_reason` は Strands の値に加え、`structured_output`（構造化回答）と `timeout`（`[limits] timeout_seconds` 超過）をランタイムが返す。
 - 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）は `prompt = [{"interruptResponse": {...}}]` で再開。
+- `mode`（`run` / `job` / `status` / `follow` / `result` / `cancel`）でジョブを操作する。ジョブのイベントには `seq` / `ts` が付き、`follow` は `after` から再生する。`include_subagents = true` でサブエージェント内のイベントを `agent` / `parent` 付きで流す。
+- ジョブのジャーナルは `[session]` の `local` / `s3` に置く（`[jobs] storage` で別の置き場も指定できる）。`agentcore_memory` / `none` の構成では `[jobs]` を明示しない限りジョブは無効。
 - 実モデルの結合テスト: `uv run --env-file .env pytest tests_integ -q`
 
 ## 観測性（OpenTelemetry）

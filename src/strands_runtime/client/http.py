@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from strands_runtime.client.base import AgentClient, InvocationError, iter_sse_events
+from strands_runtime.events import parse_event
 
 # AgentCore がセッションの識別に使うヘッダー。他の基盤では任意で、ペイロードの session_id と同じ値を入れる。
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
@@ -34,20 +35,15 @@ class HttpClient(AgentClient):
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def stream(
-        self,
-        prompt: str | list[dict[str, Any]],
-        *,
-        agent: str | None = None,
-        session_id: str | None = None,
-        actor_id: str | None = None,
-        invocation_state: dict[str, Any] | None = None,
-    ) -> Iterator[Any]:
-        payload = self._payload(prompt, agent, session_id, actor_id, invocation_state)
+    def _request(self, payload: dict[str, Any], *, session_id: str | None) -> Iterator[Any]:
         headers = {SESSION_HEADER: session_id} if session_id else {}
         with self._client.stream("POST", "/invocations", json=payload, headers=headers) as response:
             # 400 / 404 / 409 などはイベントではなく JSON のエラー本文で返るので、本文ごと例外にする。
             if response.status_code >= 400:
                 body = response.read().decode("utf-8", errors="replace")
                 raise InvocationError(f"HTTP {response.status_code}", body)
-            yield from iter_sse_events(response.iter_lines())
+            if response.headers.get("content-type", "").startswith("text/event-stream"):
+                yield from iter_sse_events(response.iter_lines())
+            else:
+                # 非ストリーミングの応答（ジョブの記録、result イベント）は JSON 1 つ。
+                yield parse_event(response.read())

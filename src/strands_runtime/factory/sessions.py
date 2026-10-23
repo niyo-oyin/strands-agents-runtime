@@ -46,17 +46,25 @@ class SessionManagerFactory:
         match spec.backend:
             case "none":
                 return None
-            case "local":
-                storage = self._storage(f"local:{spec.dir}", lambda: self._local_storage(spec))
-                return SnapshotSessionManager(ctx.session_id, storage=storage)
-            case "s3":
-                storage = self._storage(f"s3:{spec.bucket}:{spec.prefix}:{spec.region}", lambda: self._s3_storage(spec))
+            case "local" | "s3":
+                storage = self.storage_for(spec)
+                assert storage is not None
                 return SnapshotSessionManager(ctx.session_id, storage=storage)
             case "agentcore_memory":
                 return self._agentcore_memory(spec, ctx)
             case _:
                 # ``inherit`` は effective_session_spec で解決済みのはずなので、ここに来るのは配線ミス。
                 raise DefinitionError(f"session backend {spec.backend!r} cannot be built (did inheritance resolve?)")
+
+    def storage_for(self, spec: SessionSpec) -> Storage | None:
+        """``local`` / ``s3`` の共有 ``Storage`` を返す。他のバックエンドには汎用の Storage がないので ``None``。"""
+        match spec.backend:
+            case "local":
+                return self._storage(f"local:{spec.dir}", lambda: self._local_storage(spec))
+            case "s3":
+                return self._storage(f"s3:{spec.bucket}:{spec.prefix}:{spec.region}", lambda: self._s3_storage(spec))
+            case _:
+                return None
 
     def _storage(self, key: str, make: Callable[[], Storage]) -> Storage:
         """設定内容をキーにして ``Storage`` を 1 つだけ作り、以降は使い回す。"""

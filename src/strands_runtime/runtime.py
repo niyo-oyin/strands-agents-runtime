@@ -12,6 +12,7 @@ from pathlib import Path
 from strands_runtime.definitions import Registry, RuntimeConfig, load_runtime_config
 from strands_runtime.factory import AgentFactory
 from strands_runtime.invoke import Invoker
+from strands_runtime.jobs import JobJournal, JobManager
 from strands_runtime.telemetry import setup_telemetry
 
 CONFIG_ENV_VAR = "STRANDS_RUNTIME_CONFIG"
@@ -27,6 +28,7 @@ class Runtime:
     registry: Registry
     factory: AgentFactory
     invoker: Invoker
+    jobs: JobManager
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Runtime:
@@ -41,6 +43,16 @@ class Runtime:
         registry = Registry.load(config, base_dir)
         factory = AgentFactory(registry, config, base_dir=base_dir)
         setup_telemetry()
-        return cls(
-            base_dir=base_dir, config=config, registry=registry, factory=factory, invoker=Invoker(factory, config)
-        )
+        invoker = Invoker(factory, config)
+        jobs = JobManager(invoker, _job_journal(config, factory), max_duration_seconds=config.jobs.max_duration_seconds)
+        if jobs.enabled:
+            # 別プロセスで走っているジョブとの競合も 409 にするため、Invoker の排他判定にジャーナルを加える。
+            invoker.busy_check = jobs.session_busy
+        return cls(base_dir=base_dir, config=config, registry=registry, factory=factory, invoker=invoker, jobs=jobs)
+
+
+def _job_journal(config: RuntimeConfig, factory: AgentFactory) -> JobJournal | None:
+    """``[jobs] storage`` に従ってジャーナルの置き場を決める。置ける Storage がなければジョブ機能は無効。"""
+    spec = config.session if config.jobs.storage == "inherit" else config.jobs.as_session_spec()
+    storage = factory.sessions.storage_for(spec)
+    return JobJournal(storage) if storage is not None else None

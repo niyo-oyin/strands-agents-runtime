@@ -25,7 +25,7 @@ class UnknownAgentError(StrandsRuntimeError):
 
 
 class SessionBusyError(StrandsRuntimeError):
-    """同じセッションの別の呼び出しがこのプロセスで実行中。サーバーは 409 にする（AgentCore の扱いと同じ）。"""
+    """同じセッションの別の実行（同期実行またはジョブ）が進行中。サーバーは 409 にする（AgentCore の扱いと同じ）。"""
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -34,3 +34,23 @@ class SessionBusyError(StrandsRuntimeError):
 
 class ReferenceResolutionError(StrandsRuntimeError):
     """定義に書かれたモジュール・属性の参照を解決できない。"""
+
+
+class UnknownJobError(StrandsRuntimeError):
+    """指定されたジョブがジャーナルにない。サーバーは 404 にする。"""
+
+    def __init__(self, session_id: str, job_id: str | None) -> None:
+        self.session_id = session_id
+        self.job_id = job_id
+        what = f"job {job_id!r}" if job_id else "any job"
+        super().__init__(f"session {session_id!r} has no record of {what}")
+
+
+class JobsDisabledError(StrandsRuntimeError):
+    """ジョブのジャーナルを置く Storage がない構成で ``mode = "job"`` が要求された。サーバーは 400 にする。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "jobs are disabled: [session] backend has no storage for the journal; "
+            'set [jobs] storage = "local" or "s3" in runtime.toml'
+        )

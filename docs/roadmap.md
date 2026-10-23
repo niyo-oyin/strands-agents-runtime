@@ -65,7 +65,7 @@ OpenRouter や互換サーバーは落ちることがあり、フォールバッ
 
 Strands が集計する入出力トークン（キャッシュ読み書き含む）を、サブエージェント込みの合計とエージェント別内訳（使ったモデル、呼び出し回数）で `result.metrics` に載せ、同じ値と `actor_id` を OTel の現在のスパン属性に付ける。`model_failures` でフォールバックの発生も分かる。取れないプロバイダーの値は 0 のまま許容し、料金換算はしない。フォールバック候補ごとの内訳は Strands の `ModelRouter`（provisional）が served candidate を公開していないため未対応。
 
-**A3. ジョブと進捗**（契約は設計済み 2026-10-23、実装はこれから）
+**A3. ジョブと進捗**（設計・実装済み 2026-10-23）
 
 1 回の実行が 1 時間以上走る可能性は否定できない。AgentCore の同期呼び出しは 15 分、ストリーミングでも 60 分が上限で、接続を保ち続ける設計は成り立たない。
 契約は設計文書 §7.6 と ADR-7 で確定した。要点:
@@ -77,7 +77,7 @@ Strands が集計する入出力トークン（キャッシュ読み書き含む
 - 実行中は `/ping` を `HealthyBusy` にする。同一セッションの実行は 1 つだけ（409）で、`status` / `follow` / `result` / `cancel` は通す。
 - `[jobs]` でジャーナルの置き場と上限時間を設定し、`Storage` のない構成（`agentcore_memory` / `none`）では明示しない限り無効。
 
-実装の順序: ジャーナルと `job` / `status` / `result` → `follow` → `cancel` と心拍 → `HealthyBusy` と `[jobs]` 設定 → クライアントの `submit()` / `JobHandle`。
+実装: `strands_runtime.jobs`（`JobJournal` / `JobManager`）、`InvocationRequest` の `mode` / `job_id` / `after` / `include_subagents`、全イベント共通の `seq` / `ts` / `agent` / `parent`、`/ping` の `HealthyBusy`、lifespan でのシャットダウン時キャンセル、クライアントの `submit()` / `job()` / `JobHandle`。実モデル（OpenRouter）で確認済み。
 
 **A4. マルチエージェントの `kind` と進捗イベント**（中、A3 の上に載せる）
 
@@ -115,7 +115,7 @@ namespace = "{actor_id}"
 **A8. 運用の基礎**（必要になった順に）
 
 - グレースフルシャットダウン: SIGTERM で新規受付を止め、進行中の呼び出しとジョブに `cancel_signal` を立て、`Agent.shutdown()` と MCP クライアントの終了を待つ。ジョブは `cancelled_by = "runtime"` で終端にする（設計文書 §7.6.5）。
-- `/ping` の `HealthyBusy`（A3 の前提）。
+- ~~`/ping` の `HealthyBusy`~~（A3 で実装済み）。
 - 監査ログ: ツール呼び出しと判定を 1 行 JSON で記録。
 - トレースの秘匿: `gen_ai_span_attributes_only` と span redaction を `[telemetry]` から選ぶ（送信先ではなく「何を送るか」の方針なので TOML に置く）。
 - セッションの保持期間: `local` / `s3` セッションの TTL と掃除コマンド。
@@ -155,7 +155,7 @@ namespace = "{actor_id}"
 ## 6. 推奨する着手順
 
 1. ~~A1 フォールバック + A2 トークン数~~（実装済み）。
-2. **A3 ジョブと進捗**。契約は設計文書 §7.6 で確定済み。ジャーナルと `mode` から実装する。
+2. ~~**A3 ジョブと進捗**~~（設計・実装済み）。
 3. **A4 Graph / Swarm と進捗イベント**。A3 の契約の上に載せる。
 4. **A5 ツール制限、A6 長期記憶、A7 セッション保存先の拡張点、A8 運用の基礎**は要求が具体化した順に（ECS や Azure に載せる話が出たら A7 を先に）。
 5. AWS アカウント取得後に **B1 → B2 → B3 → B4 → B5**。

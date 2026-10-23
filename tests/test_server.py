@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 
 import pytest
 from starlette.testclient import TestClient
@@ -105,3 +106,61 @@ def test_busy_session_is_409(client: TestClient, runtime: Runtime) -> None:
         runtime.invoker._active_sessions.discard("busy-session-000000000000000000000000")
     assert response.status_code == 409
     assert "in progress" in response.json()["error"]
+
+
+@pytest.fixture
+def job_client(runtime: Runtime) -> Iterator[TestClient]:
+    """``with`` で使うと 1 つのイベントループが保たれ、バックグラウンドのジョブがリクエストをまたいで動く。"""
+    with TestClient(create_app(runtime)) as client:
+        yield client
+
+
+def test_job_mode_lifecycle_over_http(job_client: TestClient) -> None:
+    fakes.script(fakes.text("x" * 300), fakes.text("later"))
+    fakes.set_chunk_delay(0.02)
+    sid = "http-job-000000000000000000000000000"
+    try:
+        accepted = job_client.post("/invocations", json={"prompt": "go", "mode": "job"}, headers={SESSION_HEADER: sid})
+        assert accepted.status_code == 200
+        job = accepted.json()
+        assert job["type"] == "job" and job["state"] == "running" and job["session_id"] == sid
+        assert "parent" not in job  # 値のない共通フィールドは出さない
+
+        # 実行中は /ping が HealthyBusy、同じセッションの run は 409、status は通る。
+        assert job_client.get("/ping").json()["status"] == "HealthyBusy"
+        assert job_client.post("/invocations", json={"prompt": "again", "session_id": sid}).status_code == 409
+        status = job_client.post("/invocations", json={"mode": "status", "session_id": sid}).json()
+        assert status["state"] == "running" and status["job_id"] == job["job_id"]
+        pending = job_client.post("/invocations", json={"mode": "result", "session_id": sid}).json()
+        assert pending["type"] == "job"
+
+        cancelled = job_client.post("/invocations", json={"mode": "cancel", "session_id": sid}).json()
+        assert cancelled["state"] == "cancelling"
+
+        with job_client.stream("POST", "/invocations", json={"mode": "follow", "session_id": sid}) as response:
+            assert response.headers["content-type"].startswith("text/event-stream")
+            events = list(iter_sse_events(response.iter_lines()))
+    finally:
+        fakes.set_chunk_delay(0.0)
+    assert isinstance(events[0], StartEvent) and events[0].seq == 1
+    assert isinstance(events[-1], ResultEvent) and events[-1].stop_reason == "cancelled"
+
+    final = job_client.post("/invocations", json={"mode": "result", "session_id": sid}).json()
+    assert final["type"] == "result" and final["stop_reason"] == "cancelled"
+    assert job_client.get("/ping").json()["status"] == "Healthy"
+    # セッションは空いたので、次の同期実行が通る。
+    assert (
+        job_client.post("/invocations", json={"prompt": "again", "session_id": sid, "stream": False}).json()["text"]
+        == "later"
+    )
+
+
+def test_job_observation_errors(job_client: TestClient) -> None:
+    assert job_client.post("/invocations", json={"mode": "status"}).status_code == 400  # session_id なし
+    assert (
+        job_client.post(
+            "/invocations", json={"mode": "status", "session_id": "nobody-000000000000000000000000"}
+        ).status_code
+        == 404
+    )
+    assert job_client.post("/invocations", json={"mode": "job"}).status_code == 400  # prompt なし

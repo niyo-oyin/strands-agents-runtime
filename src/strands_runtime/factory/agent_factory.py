@@ -44,6 +44,11 @@ class AgentFactory:
         self._sessions = SessionManagerFactory(base_dir)
 
     @property
+    def sessions(self) -> SessionManagerFactory:
+        """セッションストレージの共有元。ジョブのジャーナルも同じ ``Storage`` を使う。"""
+        return self._sessions
+
+    @property
     def registry(self) -> Registry:
         return self._registry
 

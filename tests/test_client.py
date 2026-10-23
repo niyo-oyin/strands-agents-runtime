@@ -75,3 +75,30 @@ def test_http_client_raises_on_error_event(http_client: HttpClient) -> None:
     fakes.script()
     with pytest.raises(InvocationError, match="no scripted response"):
         http_client.invoke("hi")
+
+
+def test_http_client_submits_and_follows_a_job(http_client: HttpClient) -> None:
+    fakes.script(fakes.tool_use("echo", {"text": "x"}), fakes.text("finished"))
+
+    job = http_client.submit("go", agent="echoer")
+    assert job.job_id and len(job.session_id) >= 33
+    result = job.result(wait=True)
+    assert result is not None and result.text == "finished" and result.seq == 5
+
+    status = job.status()
+    assert status.state == "completed" and status.seq == 5
+    tail = list(job.follow(after=3))
+    assert [e.type for e in tail] == ["text", "result"]
+    assert job.cancel().state == "completed"  # 終端なので記録が返るだけ
+
+    # 別のプロセスからの再取得（job_id 省略は最新）。
+    same = http_client.job(job.session_id)
+    assert same.job_id == job.job_id and same.result() is not None
+
+
+def test_http_client_job_failure_raises(http_client: HttpClient) -> None:
+    fakes.script()
+    job = http_client.submit("go")
+    with pytest.raises(InvocationError, match="no scripted response"):
+        job.result(wait=True)
+    assert job.status().state == "failed"

@@ -11,6 +11,10 @@ default_id = "bedrock/global.anthropic.claude-opus-5"
 backend = "local"
 dir = "./.runtime/sessions"
 
+# [jobs]                              # ジョブ（mode = "job"）のジャーナル。省略時は [session] の local / s3 を使う
+# storage = "inherit"                 # inherit | local | s3
+# max_duration_seconds = 28800        # ジョブ 1 件の上限（既定 8 時間）
+
 [server]
 port = 18080
 log_file = "./.runtime/server.log"   # 端末に加えてファイルにも出す
