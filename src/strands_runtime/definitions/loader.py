@@ -12,7 +12,14 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from strands_runtime.definitions.schema import BUILTIN_INJECTORS, AgentDefinition, RuntimeConfig
+from strands_runtime.definitions.schema import (
+    BUILTIN_INJECTORS,
+    Definition,
+    GraphDefinition,
+    RuntimeConfig,
+    SwarmDefinition,
+    parse_definition,
+)
 from strands_runtime.errors import DefinitionError
 
 AGENT_FILE = "agent.toml"
@@ -111,9 +118,10 @@ class ResolvedAgent:
     ``mcp_servers`` は常にマッピング（``mcp.json`` 指定の場合は読み込み済み）。
     """
 
-    definition: AgentDefinition
+    definition: Definition
     directory: Path
     system_prompt: str
+    """Graph / Swarm では空文字（システムプロンプトを持たない）。"""
     tools: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -124,21 +132,35 @@ class ResolvedAgent:
     def name(self) -> str:
         return self.definition.name
 
+    @property
+    def kind(self) -> str:
+        return self.definition.kind
+
 
 def load_agent(directory: Path) -> ResolvedAgent:
-    """エージェントディレクトリ（``agent.toml`` + ``prompt.md`` + 任意の ``skills/``、``mcp.json``）を 1 つ読み込む。"""
+    """エージェントディレクトリ（``agent.toml`` + ``prompt.md`` + 任意の ``skills/``、``mcp.json``）を 1 つ読み込む。
+
+    ``kind = "graph" | "swarm"`` の定義はプロンプトやツールを持たないので、エッジ条件の参照を絶対化するだけ。
+    """
     directory = directory.resolve()
     agent_file = directory / AGENT_FILE
     data = _read_toml(agent_file)
     try:
-        definition = AgentDefinition.model_validate(data)
+        definition = parse_definition(data)
     except ValidationError as exc:
         raise DefinitionError(_describe(exc), source=str(agent_file)) from exc
+    except ValueError as exc:
+        raise DefinitionError(str(exc), source=str(agent_file)) from exc
 
     # 名前はディレクトリ名と一致させる。レジストリがディレクトリ名で引き、ツール名にもなるため。
     if definition.name != directory.name:
         raise DefinitionError(
             f"name {definition.name!r} must match the directory name {directory.name!r}", source=str(agent_file)
+        )
+
+    if isinstance(definition, GraphDefinition | SwarmDefinition):
+        return ResolvedAgent(
+            definition=_absolutize_conditions(definition, directory), directory=directory, system_prompt=""
         )
 
     prompt_path = directory / definition.prompt
@@ -203,6 +225,19 @@ def load_agent(directory: Path) -> ResolvedAgent:
         interventions=interventions,
         plugins=plugins,
     )
+
+
+def _absolutize_conditions(definition: GraphDefinition | SwarmDefinition, directory: Path) -> Definition:
+    """Graph のエッジ条件のファイル参照を、エージェントディレクトリ基準の絶対パスにする。"""
+    if not isinstance(definition, GraphDefinition):
+        return definition
+    edges = [
+        e.model_copy(update={"condition": _resolve_path_reference(e.condition, directory)})
+        if e.condition and is_path_reference(e.condition)
+        else e
+        for e in definition.edges
+    ]
+    return definition.model_copy(update={"edges": edges}) if edges != definition.edges else definition
 
 
 def _load_mcp_servers(

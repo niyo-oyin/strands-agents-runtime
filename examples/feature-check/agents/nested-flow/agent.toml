@@ -1,0 +1,11 @@
+name = "nested-flow"
+kind = "graph"
+description = "helpdesk（swarm）の回答を summarizer が要約する（入れ子の動作確認用）"
+nodes = ["helpdesk", "summarizer"]
+
+[[edges]]
+from = "helpdesk"
+to = "summarizer"
+
+[limits]
+timeout_seconds = 300

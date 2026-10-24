@@ -1,0 +1,12 @@
+name = "approval-flow"
+kind = "graph"
+description = "本文を書き、人の承認を得てから要約する（ノード内 HITL の動作確認用）"
+nodes = ["drafter", "gatekeeper"]
+output = "gatekeeper"
+
+[[edges]]
+from = "drafter"
+to = "gatekeeper"
+
+[limits]
+timeout_seconds = 300

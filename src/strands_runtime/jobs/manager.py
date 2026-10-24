@@ -22,10 +22,13 @@ from strands_runtime.errors import JobsDisabledError, UnknownJobError
 from strands_runtime.events import (
     CancelledBy,
     ErrorEvent,
+    HandoffEvent,
     InterruptEvent,
     JobEvent,
     JobLastEvent,
     JobState,
+    NodeStartEvent,
+    NodeStopEvent,
     ResultEvent,
     StartEvent,
     TextEvent,
@@ -381,6 +384,12 @@ def _summary(event: Any) -> str:
             return f"{event.status}: {_head(event.preview)}" if event.preview else event.status
         case InterruptEvent():
             return ", ".join(i.name for i in event.interrupts)
+        case NodeStartEvent():
+            return event.node_id
+        case NodeStopEvent():
+            return f"{event.node_id}: {event.status}"
+        case HandoffEvent():
+            return f"{', '.join(event.from_nodes)} → {', '.join(event.to_nodes)}"
         case ResultEvent():
             return event.stop_reason
         case ErrorEvent():

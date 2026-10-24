@@ -1,22 +1,30 @@
-""":class:`ResolvedAgent` から、1 回の呼び出しに使う ``strands.Agent`` を組み立てる。"""
+""":class:`ResolvedAgent` から、1 回の呼び出しに使う ``strands.Agent``（または Graph / Swarm）を組み立てる。"""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 from strands import Agent
 from strands.hooks import HookProvider
+from strands.multiagent import GraphBuilder, MultiAgentBase, Swarm
+from strands.multiagent.graph import GraphState
 
 from strands_runtime.definitions.loader import ResolvedAgent
 from strands_runtime.definitions.registry import Registry
-from strands_runtime.definitions.schema import RuntimeConfig
+from strands_runtime.definitions.schema import (
+    AgentDefinition,
+    GraphDefinition,
+    RuntimeConfig,
+    SessionSpec,
+    SwarmDefinition,
+)
 from strands_runtime.errors import DefinitionError
 from strands_runtime.factory.models import build_model
-from strands_runtime.factory.references import resolve_class
+from strands_runtime.factory.references import load_attribute, resolve_class
 from strands_runtime.factory.sessions import SessionContext, SessionManagerFactory, effective_session_spec
 from strands_runtime.factory.tools import (
     MCPClientCache,
@@ -28,6 +36,24 @@ from strands_runtime.factory.tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _condition(reference: str) -> Callable[..., bool]:
+    """エッジ条件のコード参照を解決する。Strands は引数名で新旧の形（``invocation_state`` の有無）を見分ける。"""
+    func = load_attribute(reference)
+    if not callable(func):
+        raise DefinitionError(f"edge condition {reference!r} is not callable")
+    return func  # type: ignore[no-any-return]
+
+
+def _all_completed(from_ids: list[str]) -> Callable[[GraphState], bool]:
+    """``wait_for = "all"`` の合流条件。入ってくるエッジの元ノードがすべて完了しているときだけ進む。"""
+
+    def condition(state: GraphState) -> bool:
+        completed = {node.node_id for node in state.completed_nodes}
+        return all(node_id in completed for node_id in from_ids)
+
+    return condition
 
 
 class AgentFactory:
@@ -52,29 +78,177 @@ class AgentFactory:
     def registry(self) -> Registry:
         return self._registry
 
-    def build(self, name: str, session: SessionContext, *, hooks: Sequence[HookProvider] = ()) -> Agent:
-        """公開中のエージェント ``name`` を ``session`` 用に組み立てる。``hooks`` はツリー内の全エージェントに付く。"""
-        return self._build(self._registry.get(name), session, depth=0, persist=True, hooks=list(hooks))
+    def build(
+        self, name: str, session: SessionContext, *, hooks: Sequence[HookProvider] = ()
+    ) -> Agent | MultiAgentBase:
+        """公開中の定義 ``name`` を ``session`` 用に組み立てる。``hooks`` はツリー内の全エージェントに付く。
+
+        ``kind = "agent"`` なら ``Agent``、``graph`` / ``swarm`` なら Strands のオーケストレーターを返す。
+        どちらも ``stream_async`` を持ち、Invoker はそれだけに依存する。
+        """
+        resolved = self._registry.get(name)
+        return self._build(resolved, session, depth=0, persist=True, hooks=list(hooks), scope=resolved.name)
 
     def _build(
-        self, resolved: ResolvedAgent, session: SessionContext, *, depth: int, persist: bool, hooks: list[HookProvider]
+        self,
+        resolved: ResolvedAgent,
+        session: SessionContext,
+        *,
+        depth: int,
+        persist: bool,
+        hooks: list[HookProvider],
+        scope: str,
+        node_id: str | None = None,
+    ) -> Agent | MultiAgentBase:
+        """種類で分岐する。``scope`` は入れ子のオーケストレーターの ID を一意にするための名前の連なり。"""
+        if depth > self._config.runtime.max_subagent_depth:
+            raise DefinitionError(f"nesting deeper than {self._config.runtime.max_subagent_depth} at {resolved.name!r}")
+        d = resolved.definition
+        if isinstance(d, GraphDefinition):
+            return self._build_graph(resolved, d, session, depth=depth, persist=persist, hooks=hooks, scope=scope)
+        if isinstance(d, SwarmDefinition):
+            return self._build_swarm(resolved, d, session, depth=depth, persist=persist, hooks=hooks, scope=scope)
+        return self._build_agent(resolved, d, session, depth=depth, persist=persist, hooks=hooks, node_id=node_id)
+
+    def _node(
+        self,
+        node_agent: str,
+        node_id: str,
+        session: SessionContext,
+        *,
+        depth: int,
+        hooks: list[HookProvider],
+        scope: str,
+    ) -> Agent | MultiAgentBase:
+        """Graph / Swarm のノード 1 つ。セッションは付けず（Strands の制約）、名前はノード ID にする。"""
+        dep = self._registry.dependency(node_agent)
+        return self._build(
+            dep,
+            session.child(node_id),
+            depth=depth + 1,
+            persist=False,
+            hooks=hooks,
+            scope=f"{scope}--{node_id}",
+            node_id=node_id,
+        )
+
+    def _orchestrator_session(self, spec: SessionSpec, session: SessionContext, *, persist: bool) -> Any:
+        """オーケストレーターの状態（進んだノード、中断状態）の保存先。``none`` と入れ子では付けない。"""
+        if not persist:
+            return None
+        effective = effective_session_spec(spec, self._config.session)
+        if effective.backend == "none":
+            return None
+        if effective.backend == "agentcore_memory":
+            raise DefinitionError("graph / swarm cannot persist state to the 'agentcore_memory' backend")
+        return self._sessions.build(effective, session)
+
+    def _build_graph(
+        self,
+        resolved: ResolvedAgent,
+        d: GraphDefinition,
+        session: SessionContext,
+        *,
+        depth: int,
+        persist: bool,
+        hooks: list[HookProvider],
+        scope: str,
+    ) -> MultiAgentBase:
+        builder = GraphBuilder()
+        for node in d.node_specs:
+            builder.add_node(
+                self._node(node.agent, node.node_id, session, depth=depth, hooks=hooks, scope=scope), node.node_id
+            )
+        # ``wait_for = "all"`` のノードへ向かうエッジには、元ノードが全部完了したことを確かめる条件を合成する
+        # （Strands の既定は OR で、1 本でも条件を満たせば実行可能になる）。
+        inbound: dict[str, list[str]] = {}
+        for edge in d.edges:
+            inbound.setdefault(edge.to, []).append(edge.from_)
+        wait_all = {n.node_id for n in d.node_specs if n.wait_for == "all"}
+        for edge in d.edges:
+            condition: Callable[..., bool] | None
+            if edge.to in wait_all:
+                condition = _all_completed(inbound[edge.to])
+            elif edge.condition:
+                condition = _condition(edge.condition)
+            else:
+                condition = None
+            builder.add_edge(edge.from_, edge.to, condition=condition)
+        for entry in d.entry:
+            builder.set_entry_point(entry)
+        builder.reset_on_revisit(d.reset_on_revisit)
+        if d.limits.node_executions is not None:
+            builder.set_max_node_executions(d.limits.node_executions)
+        if d.limits.timeout_seconds is not None:
+            builder.set_execution_timeout(d.limits.timeout_seconds)
+        if d.limits.node_timeout_seconds is not None:
+            builder.set_node_timeout(d.limits.node_timeout_seconds)
+        builder.set_graph_id(scope)
+        session_manager = self._orchestrator_session(d.session, session, persist=persist)
+        if session_manager is not None:
+            builder.set_session_manager(session_manager)
+        return builder.build()
+
+    def _build_swarm(
+        self,
+        resolved: ResolvedAgent,
+        d: SwarmDefinition,
+        session: SessionContext,
+        *,
+        depth: int,
+        persist: bool,
+        hooks: list[HookProvider],
+        scope: str,
+    ) -> MultiAgentBase:
+        agents: list[Agent] = []
+        entry: Agent | None = None
+        for node in d.node_specs:
+            built = self._node(node.agent, node.node_id, session, depth=depth, hooks=hooks, scope=scope)
+            if not isinstance(built, Agent):
+                raise DefinitionError(f"swarm node {node.node_id!r} must be kind = 'agent'")
+            agents.append(built)
+            if node.node_id == d.entry:
+                entry = built
+        limits = d.limits
+        return Swarm(
+            agents,
+            entry_point=entry,
+            max_handoffs=limits.handoffs,
+            max_iterations=limits.handoffs,
+            execution_timeout=limits.timeout_seconds,
+            node_timeout=limits.node_timeout_seconds,
+            repetitive_handoff_detection_window=limits.repetitive_handoff_window,
+            repetitive_handoff_min_unique_agents=limits.repetitive_handoff_min_unique_agents,
+            session_manager=self._orchestrator_session(d.session, session, persist=persist),
+            id=scope,
+        )
+
+    def _build_agent(
+        self,
+        resolved: ResolvedAgent,
+        d: AgentDefinition,
+        session: SessionContext,
+        *,
+        depth: int,
+        persist: bool,
+        hooks: list[HookProvider],
+        node_id: str | None,
     ) -> Agent:
-        """``persist=False`` はサブエージェント用。
+        """``persist=False`` はサブエージェントとノード用。
 
         セッションマネージャーを付けない。
-        ``as_tool()`` は呼び出しごとに子の状態をリセットするため、永続化と両立しない。
+        ``as_tool()`` は呼び出しごとに子の状態をリセットするため永続化と両立せず、Graph / Swarm はノードに持たせることを禁じている。
+        ``node_id`` が与えられたら名前にする（Swarm はノード ID に ``agent.name`` を使う）。
         """
-        d = resolved.definition
-        if depth > self._config.runtime.max_subagent_depth:
-            raise DefinitionError(
-                f"subagent nesting deeper than {self._config.runtime.max_subagent_depth} at {d.name!r}"
-            )
-
         # ツールは「文字列参照」「MCP クライアント」「ツール化したサブエージェント」を 1 つのリストにして SDK に渡す。
         tools: list[Any] = [*resolved.tools, *self._mcp.get(resolved)]
         for sub_name in d.subagents:
             sub = self._registry.dependency(sub_name)
-            child = self._build(sub, session.child(sub_name), depth=depth + 1, persist=False, hooks=hooks)
+            child = self._build(
+                sub, session.child(sub_name), depth=depth + 1, persist=False, hooks=hooks, scope=f"{d.name}--{sub_name}"
+            )
+            if not isinstance(child, Agent):
+                raise DefinitionError(f"subagent {sub_name!r} must be kind = 'agent'")
             tools.append(child.as_tool(name=sub.name, description=sub.definition.description or None))
 
         plugins = [*build_plugins(resolved), *build_context_injectors(resolved, session)]
@@ -97,8 +271,8 @@ class AgentFactory:
         }
 
         return Agent(
-            name=d.name,
-            agent_id=d.name,
+            name=node_id or d.name,
+            agent_id=node_id or d.name,
             description=d.description or None,
             model=build_model(d.model, self._config.model),
             system_prompt=resolved.system_prompt,

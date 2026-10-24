@@ -79,12 +79,17 @@ Strands が集計する入出力トークン（キャッシュ読み書き含む
 
 実装: `strands_runtime.jobs`（`JobJournal` / `JobManager`）、`InvocationRequest` の `mode` / `job_id` / `after` / `include_subagents`、全イベント共通の `seq` / `ts` / `agent` / `parent`、`/ping` の `HealthyBusy`、lifespan でのシャットダウン時キャンセル、クライアントの `submit()` / `job()` / `JobHandle`。実モデル（OpenRouter）で確認済み。
 
-**A4. マルチエージェントの `kind` と進捗イベント**（中、A3 の上に載せる）
+**A4. マルチエージェントの `kind` と進捗イベント**（設計・実装済み 2026-10-23）
 
-- Graph / Swarm を `kind = "graph" | "swarm"` で宣言する（設計文書 §8 の予約どおり）。`SnapshotSessionManager` が Graph / Swarm にも対応したため、セッション永続化は共通化できる。
-- Strands の `multiagent_node_start / node_stop / handoff` を `node_start` / `node_stop` / `handoff` イベントとして契約に加え、「フローのどの段階にいるか」を同期・非同期のどちらでも返す。
-- ネストした実行の見せ方は A3 で決めた（設計文書 §7.6.8）。全イベントに `agent` / `parent` を設け、`include_subagents = true` で子のイベントを流す。Graph / Swarm のノード内イベントは `parent = node_id` を持つ。
-- 動的な子生成（`make_subagent` の presets / authority）はその後。
+設計文書 §8.2〜8.7 と ADR-8 で確定した。要点:
+
+- `kind = "graph" | "swarm"` の定義。ノードは定義名で参照（`nodes` の短縮形と `[[nodes]]`）、Graph は `[[edges]]` の `condition` をコード参照、合流は `wait_for = "all"`、`output` で最終テキストのノードを選ぶ。`[limits]` は種類ごとのキー。
+- Graph / Swarm は呼び出し 1 回で完結するワークフロー。セッションは HITL の再開と進捗の観測にだけ使い、`agentcore_memory` は使えない。
+- イベントに `node_start` / `node_stop` / `handoff` を加え、ノード内のイベントは常に `agent` / `parent` 付きで流す。`result.nodes` にノード別の結果。`FAILED` は `error`（`GraphFailed` / `SwarmFailed`）。
+- 停止は全ノードの `Agent.cancel()` に伝え、Swarm が `cancelled` を `COMPLETED` と報告する点をランタイムが補正する。
+
+実装: スキーマ（`GraphDefinition` / `SwarmDefinition`）、Registry の依存解決と種類の検査、Factory（ノードの組み立て、`wait_for` の合成条件、オーケストレーターのセッション）、Invoker（イベントの平坦化、`result.nodes`、停止理由、`Agent.cancel()` への伝播）、ジョブのジャーナル。examples/feature-check の `writing-flow`（graph）と `helpdesk`（swarm）を実モデルで確認。
+動的な子生成（`make_subagent` の presets / authority）はその後。
 
 **A5. ツール呼び出しの制限**（小）
 
@@ -156,7 +161,7 @@ namespace = "{actor_id}"
 
 1. ~~A1 フォールバック + A2 トークン数~~（実装済み）。
 2. ~~**A3 ジョブと進捗**~~（設計・実装済み）。
-3. **A4 Graph / Swarm と進捗イベント**。A3 の契約の上に載せる。
+3. ~~**A4 Graph / Swarm と進捗イベント**~~（設計・実装済み）。
 4. **A5 ツール制限、A6 長期記憶、A7 セッション保存先の拡張点、A8 運用の基礎**は要求が具体化した順に（ECS や Azure に載せる話が出たら A7 を先に）。
 5. AWS アカウント取得後に **B1 → B2 → B3 → B4 → B5**。
 6. **C1 A2A** は Runtime を分割する運用が始まるときに。

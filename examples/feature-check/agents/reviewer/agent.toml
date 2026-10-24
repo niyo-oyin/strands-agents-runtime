@@ -1,0 +1,7 @@
+name = "reviewer"
+description = "本文を審査し、承認か差し戻しかを決める"
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

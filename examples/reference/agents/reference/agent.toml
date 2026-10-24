@@ -8,7 +8,7 @@
 
 name = "reference"
 description = "全設定項目を書いたリファレンス定義"      # list コマンドとサブエージェントのツール説明に使う
-kind = "agent"                                         # 現在は "agent" のみ（graph / swarm は予約）
+kind = "agent"                                         # agent（既定）| graph | swarm。graph は ../flow、swarm は ../crew を参照
 prompt = "prompt.md"                                   # システムプロンプトの Markdown（既定 prompt.md）
 
 # ツール。ファイル（@tool 関数を含む .py）か、モジュール参照。
@@ -21,7 +21,8 @@ tools = [
 # 省略時は ./skills があればそれを使う。空リスト [] で明示的に無効化する。
 skills = ["./skills"]
 
-# サブエージェント（agents-as-tools）。同じ agents_dir にある定義名。親が LLM でルーティングする。
+# サブエージェント（agents-as-tools）。同じ agents_dir にある kind = "agent" の定義名（graph / swarm は置けない）。
+# 親が LLM でルーティングする。子の実行は親の tool_use / tool_result に畳まれ、include_subagents = true で中身が見える。
 subagents = ["helper"]
 
 # 介入ハンドラー。.cedar は Cedar ポリシー（ツール呼び出しの許可・拒否）、それ以外は InterventionHandler へのコード参照。

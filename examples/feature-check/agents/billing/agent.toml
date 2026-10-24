@@ -1,0 +1,7 @@
+name = "billing"
+description = "料金・請求・返金の担当"
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"

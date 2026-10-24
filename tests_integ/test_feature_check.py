@@ -10,7 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from strands_runtime.events import ResultEvent, ToolResultEvent, ToolUseEvent
+from strands_runtime.events import (
+    HandoffEvent,
+    NodeStartEvent,
+    NodeStopEvent,
+    ResultEvent,
+    ToolResultEvent,
+    ToolUseEvent,
+)
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.runtime import Runtime
 
@@ -74,3 +81,29 @@ async def test_fallback_to_second_model_and_usage(runtime: Runtime) -> None:
     assert "2" in result.text
     assert result.metrics.model_failures >= 1
     assert result.metrics.total_tokens > 0 and "fallback" in result.metrics.agents
+
+
+async def test_graph_runs_nodes_and_reports_node_results(runtime: Runtime) -> None:
+    events = await run(runtime, "writing-flow", "テーマ: 朝の散歩")
+    node_ids = [e.node_id for e in events if isinstance(e, NodeStopEvent)]
+    assert node_ids[:2] == ["outliner", "drafter"] and "reviewer" in node_ids
+    result = result_of(events)
+    assert result.nodes is not None and result.nodes["outliner"].status == "completed"
+    assert result.text  # output = drafter
+
+
+async def test_swarm_hands_off_to_the_right_agent(runtime: Runtime) -> None:
+    events = await run(runtime, "helpdesk", "先月二重に請求されています。返金してもらえますか？")
+    handoffs = [e for e in events if isinstance(e, HandoffEvent)]
+    assert handoffs and handoffs[0].to_nodes == ["billing"]
+    result = result_of(events)
+    assert result.nodes is not None and result.nodes["billing"].status == "completed"
+
+
+async def test_nested_swarm_inside_graph(runtime: Runtime) -> None:
+    events = await run(runtime, "nested-flow", "請求書が届かないので再発行してほしい")
+    inner = [e for e in events if isinstance(e, NodeStartEvent) and e.parent == "helpdesk"]
+    assert [e.node_id for e in inner][:1] == ["triage"]
+    result = result_of(events)
+    assert result.nodes is not None and set(result.nodes) == {"helpdesk", "summarizer"}
+    assert result.text.startswith("要約")

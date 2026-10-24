@@ -259,6 +259,154 @@ class AgentDefinition(_Strict):
         return self
 
 
+class NodeSpec(_Strict):
+    """Graph / Swarm のノード 1 つ。``agent`` は同じ ``agents_dir`` の定義名、``id`` は省略時 ``agent`` と同じ。"""
+
+    agent: str = Field(pattern=AGENT_NAME_PATTERN.pattern)
+    id: str | None = Field(default=None, pattern=AGENT_NAME_PATTERN.pattern)
+    wait_for: Literal["any", "all"] = "any"
+    """``all`` は、入ってくるエッジの元ノードがすべて完了してから実行する（合流）。Strands の既定は ``any``（OR）。"""
+
+    @property
+    def node_id(self) -> str:
+        return self.id or self.agent
+
+
+class EdgeSpec(_Strict):
+    """Graph のエッジ。``condition`` は ``(GraphState, *, invocation_state) -> bool`` へのコード参照。"""
+
+    from_: str = Field(alias="from", pattern=AGENT_NAME_PATTERN.pattern)
+    to: str = Field(pattern=AGENT_NAME_PATTERN.pattern)
+    condition: NonBlankStr | None = None
+
+
+class GraphLimitsSpec(_Strict):
+    """Graph の ``[limits]``。Strands の ``max_node_executions`` / ``execution_timeout`` / ``node_timeout``。"""
+
+    node_executions: int | None = Field(default=None, gt=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    node_timeout_seconds: float | None = Field(default=None, gt=0)
+
+
+class SwarmLimitsSpec(_Strict):
+    """Swarm の ``[limits]``。既定値は Strands の ``Swarm`` と同じ。"""
+
+    handoffs: int = Field(default=20, gt=0)
+    """``max_handoffs`` と ``max_iterations`` の両方に渡す（Strands ではどちらも実行回数と比較される）。"""
+    timeout_seconds: float = Field(default=900, gt=0)
+    node_timeout_seconds: float = Field(default=300, gt=0)
+    repetitive_handoff_window: int = Field(default=0, ge=0)
+    repetitive_handoff_min_unique_agents: int = Field(default=0, ge=0)
+
+
+class _MultiAgentDefinition(_Strict):
+    """Graph / Swarm 定義の共通部分。ノードは定義名で参照し、ノード自身の設定は参照先の ``agent.toml`` に置く。"""
+
+    name: str = Field(pattern=AGENT_NAME_PATTERN.pattern)
+    description: str = ""
+    nodes: list[str] | list[NodeSpec] = Field(min_length=1)
+    """文字列（定義名 = ノード ID）の配列か、``[[nodes]]`` テーブルの配列。TOML の規則で混在はできない。"""
+    session: SessionSpec = Field(default_factory=SessionSpec)
+    """オーケストレーターの状態（進んだノード、中断状態）の保存先。HITL の再開に使う。"""
+
+    @property
+    def node_specs(self) -> list[NodeSpec]:
+        return [NodeSpec(agent=n) if isinstance(n, str) else n for n in self.nodes]
+
+    @property
+    def node_ids(self) -> list[str]:
+        return [n.node_id for n in self.node_specs]
+
+    @property
+    def dependencies(self) -> list[str]:
+        """この定義が参照する他の定義名（重複なし、順序維持）。"""
+        return list(dict.fromkeys(n.agent for n in self.node_specs))
+
+    @model_validator(mode="after")
+    def _nodes_consistent(self) -> _MultiAgentDefinition:
+        ids = self.node_ids
+        if len(set(ids)) != len(ids):
+            raise ValueError("node ids must be unique")
+        if self.name in self.dependencies:
+            raise ValueError("a graph or swarm cannot contain itself as a node")
+        if self.session.backend == "agentcore_memory":
+            raise ValueError("graph / swarm cannot use session backend 'agentcore_memory' (no generic storage)")
+        return self
+
+
+class GraphDefinition(_MultiAgentDefinition):
+    """``kind = "graph"``。決定的なワークフロー（``strands.multiagent.GraphBuilder``）。"""
+
+    kind: Literal["graph"]
+    entry: list[str] = Field(default_factory=list)
+    """開始ノード。省略時は入ってくるエッジがないノード。"""
+    edges: list[EdgeSpec] = Field(default_factory=list)
+    output: str | None = None
+    """``result.text`` にするノード。省略時は最後に完了したノード。"""
+    reset_on_revisit: bool = False
+    limits: GraphLimitsSpec = Field(default_factory=GraphLimitsSpec)
+
+    @model_validator(mode="after")
+    def _edges_consistent(self) -> GraphDefinition:
+        ids = set(self.node_ids)
+        for ref in [*self.entry, *([self.output] if self.output else [])]:
+            if ref not in ids:
+                raise ValueError(f"unknown node {ref!r} in entry/output")
+        seen: set[tuple[str, str]] = set()
+        wait_all = {n.node_id for n in self.node_specs if n.wait_for == "all"}
+        for edge in self.edges:
+            if edge.from_ not in ids or edge.to not in ids:
+                raise ValueError(f"edge {edge.from_!r} -> {edge.to!r} refers to an unknown node")
+            if (edge.from_, edge.to) in seen:
+                raise ValueError(f"duplicate edge {edge.from_!r} -> {edge.to!r}")
+            seen.add((edge.from_, edge.to))
+            if edge.to in wait_all and edge.condition is not None:
+                raise ValueError(f"edges into {edge.to!r} (wait_for = 'all') cannot have a condition")
+        # 入ってくるエッジのないノードがなければ Strands は開始点を決められない（循環だけのグラフ）。
+        if not self.entry and self.edges and not (ids - {e.to for e in self.edges}):
+            raise ValueError("entry is required when every node has an incoming edge")
+        return self
+
+
+class SwarmDefinition(_MultiAgentDefinition):
+    """``kind = "swarm"``。自律的なハンドオフ（``strands.multiagent.Swarm``）。ノードは ``kind = "agent"`` の定義に限る。"""
+
+    kind: Literal["swarm"]
+    entry: str | None = None
+    limits: SwarmLimitsSpec = Field(default_factory=SwarmLimitsSpec)
+
+    @model_validator(mode="after")
+    def _entry_exists(self) -> SwarmDefinition:
+        if self.entry is not None and self.entry not in self.node_ids:
+            raise ValueError(f"unknown entry node {self.entry!r}")
+        return self
+
+
+Definition = AgentDefinition | GraphDefinition | SwarmDefinition
+MultiAgentDefinition = GraphDefinition | SwarmDefinition
+DEFINITION_KINDS: dict[str, type[AgentDefinition] | type[GraphDefinition] | type[SwarmDefinition]] = {
+    "agent": AgentDefinition,
+    "graph": GraphDefinition,
+    "swarm": SwarmDefinition,
+}
+
+
+def parse_definition(data: dict[str, Any]) -> Definition:
+    """``kind``（省略時 ``agent``）で定義の型を選んで検証する。"""
+    kind = data.get("kind", "agent")
+    model = DEFINITION_KINDS.get(kind) if isinstance(kind, str) else None
+    if model is None:
+        raise ValueError(f"kind must be one of {sorted(DEFINITION_KINDS)}, got {kind!r}")
+    return model.model_validate(data)
+
+
+def dependencies_of(definition: Definition) -> list[str]:
+    """定義が参照する他の定義名（単体は ``subagents``、Graph / Swarm はノード）。"""
+    if isinstance(definition, AgentDefinition):
+        return list(definition.subagents)
+    return definition.dependencies
+
+
 class RuntimeSection(_Strict):
     """``[runtime]`` テーブル。"""
 

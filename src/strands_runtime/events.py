@@ -100,6 +100,44 @@ class InterruptEvent(_StreamEvent):
     interrupts: list[InterruptInfo]
 
 
+class NodeStartEvent(_StreamEvent):
+    """Graph / Swarm のノードが実行を始めた。``agent`` はノードが使う定義名、``node_type`` は ``agent`` か ``multiagent``。"""
+
+    type: Literal["node_start"] = "node_start"
+    node_id: str
+    node_type: str
+
+
+class NodeStopEvent(_StreamEvent):
+    """ノードが終わった。``status`` は ``completed`` / ``failed`` / ``interrupted`` / ``cancelled``。"""
+
+    type: Literal["node_stop"] = "node_stop"
+    node_id: str
+    status: str
+    latency_ms: int = 0
+    preview: str = ""
+    """ノードの最終テキストの先頭。"""
+
+
+class HandoffEvent(_StreamEvent):
+    """Swarm の引き継ぎ、または Graph のバッチ間の遷移。"""
+
+    type: Literal["handoff"] = "handoff"
+    from_nodes: list[str]
+    to_nodes: list[str]
+    message: str | None = None
+
+
+class NodeSummary(_Event):
+    """``result.nodes`` の 1 要素。ノードの最終状態。"""
+
+    status: str
+    agent: str
+    execution_count: int = 0
+    latency_ms: int = 0
+    text: str = ""
+
+
 class AgentUsageEvent(_Event):
     """エージェントツリー内の 1 エージェント（ルートまたはサブエージェント）のトークン使用量。"""
 
@@ -138,6 +176,8 @@ class ResultEvent(_StreamEvent):
     text: str
     structured_output: dict[str, Any] | None = None
     metrics: Metrics = Field(default_factory=Metrics)
+    nodes: dict[str, NodeSummary] | None = None
+    """Graph / Swarm のノード別の結果。単体エージェントでは ``None``。"""
 
 
 class ErrorEvent(_StreamEvent):
@@ -198,6 +238,9 @@ RuntimeEvent = Annotated[
     | ToolUseEvent
     | ToolResultEvent
     | InterruptEvent
+    | NodeStartEvent
+    | NodeStopEvent
+    | HandoffEvent
     | ResultEvent
     | ErrorEvent
     | JobEvent,

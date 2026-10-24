@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from strands_runtime.definitions.loader import ResolvedAgent, is_path_reference
-from strands_runtime.definitions.schema import BUILTIN_INJECTORS
+from strands_runtime.definitions.schema import BUILTIN_INJECTORS, AgentDefinition, GraphDefinition
 from strands_runtime.errors import StrandsRuntimeError
 from strands_runtime.events import ErrorEvent, ResultEvent, TextEvent
 from strands_runtime.factory.references import load_attribute
@@ -88,11 +88,14 @@ def _check_references(agent: ResolvedAgent) -> list[str]:
     problems: list[str] = []
     d = agent.definition
     refs = [*agent.plugins, *(i for i in agent.interventions if not i.endswith(".cedar"))]
-    if d.model.module:
-        refs.append(d.model.module)
-    if d.structured_output:
-        refs.append(d.structured_output.model)
-    refs.extend(i for i in d.context.inject if i not in BUILTIN_INJECTORS)
+    if isinstance(d, GraphDefinition):
+        refs.extend(e.condition for e in d.edges if e.condition)
+    elif isinstance(d, AgentDefinition):
+        if d.model.module:
+            refs.append(d.model.module)
+        if d.structured_output:
+            refs.append(d.structured_output.model)
+        refs.extend(i for i in d.context.inject if i not in BUILTIN_INJECTORS)
     for ref in refs:
         try:
             load_attribute(ref)
@@ -151,8 +154,11 @@ def _check_mcp(agent: ResolvedAgent) -> list[str]:
 def _list(runtime: Runtime) -> int:
     for name in runtime.registry.published:
         d = runtime.registry.get(name).definition
-        model = d.model.id or d.model.module or runtime.config.model.default_id
-        print(f"{name}\t{model}\t{d.description}")
+        if isinstance(d, AgentDefinition):
+            detail = d.model.id or d.model.module or runtime.config.model.default_id
+        else:
+            detail = f"{d.kind}: {', '.join(d.node_ids)}"
+        print(f"{name}\t{detail}\t{d.description}")
     return 0
 
 

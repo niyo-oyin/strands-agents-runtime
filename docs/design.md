@@ -238,7 +238,7 @@ output_tokens = 32000
 timeout_seconds = 120                    # ランタイムが強制する実時間の上限
 ```
 
-全項目を説明コメント付きで書いた定義は `examples/reference/`（`runtime.toml` と `agents/reference/agent.toml`）にあり、`make check` の `validate --mcp` の対象にして陳腐化を防ぐ。
+全項目を説明コメント付きで書いた定義は `examples/reference/`（`runtime.toml`、単体の `agents/reference/agent.toml`、Graph の `agents/flow/agent.toml`、Swarm の `agents/crew/agent.toml`）にあり、`make check` の `validate --mcp` の対象にして陳腐化を防ぐ。
 
 #### スキーマ（主要キー）
 
@@ -260,6 +260,7 @@ timeout_seconds = 120                    # ランタイムが強制する実時�
 | `skills` | list[str] | `["./skills"]`（存在時） | `AgentSkills(skills=[...])` を `plugins` に追加 |
 | `subagents` | list[str] | `[]` | 定義名を解決して構築した `Agent` を `tools` に追加 |
 | `mcp_servers` | table or path | `{}` | `MCPClient.load_servers(dict)` → `ToolProvider` として `tools` に追加 |
+| `kind` | `"agent"` / `"graph"` / `"swarm"` | `"agent"` | `graph` / `swarm` のキーは [§8.2](#82-graph--swarm-の定義フォーマット) |
 | `context.manager` | enum or table | `"off"` | `Agent(context_manager=)`。`auto` / `agentic` は `retrieve_context` ツールの追加と要約（自身のモデル）を伴うため、必要な定義だけで有効にする |
 | `context.inject` | list[str] | `[]` | SDK の `ContextInjector`。組み込みは `datetime`（`context.timezone` で時刻帯指定）と `actor`（`actor_id`）。それ以外はモジュール参照で `(InjectionContext) -> str` を指す |
 | `limits.timeout_seconds` | float | なし | ランタイムの監視タイマー。超過時は `cancel_signal` で穏やかに停止させ `stop_reason = "timeout"` の `result` を返す。猶予（15 秒）内に止まらなければ `error`（`Timeout`） |
@@ -505,9 +506,10 @@ Strands の生イベント（`stream_async` の dict）は量が多く、シリ�
 | `tool_use` | `tool_use_id`, `name`, `input` | `message`（assistant、toolUse ブロック） |
 | `tool_result` | `tool_use_id`, `status`, `preview`（500 文字まで）、`tool_result_detail = "full"` のときは `content` も | `message`（user、toolResult ブロック） |
 | `interrupt` | `interrupts`（HITL 再開用）| `stop_reason == "interrupt"` |
-| `result` | `stop_reason`, `text`, `structured_output`, `metrics`, `session_id` | `result` イベント |
+| `result` | `stop_reason`, `text`, `structured_output`, `metrics`, `session_id`, `nodes`（Graph / Swarm のノード別結果。単体では `null`） | `result` イベント |
 | `error` | `error_type`, `message` | 例外（Strands が `force_stop` の後に再送出する例外を 1 件の `error` にまとめる）。結果もエラーもなく終わった場合は `NoResult` |
 | `job` | `job_id`, `state`, `accepted_at`, `updated_at`, `finished_at`, `seq`, `last_event`, `stop_reason`, `cancelled_by`, `error_type` | ジョブの記録（[§7.6.3](#763-状態)）。`mode` が `job` / `status` / `cancel` の応答と、`result` の未完了時 |
+| `node_start` / `node_stop` / `handoff` | ノード ID、状態、引き継ぎ元と先 | Graph / Swarm のノード遷移（[§8.5](#85-呼び出し契約の拡張)） |
 
 すべてのイベントは共通の任意フィールドとして `seq`（ジョブのジャーナル内の連番）、`ts`（記録時刻）、`agent`（発生させたエージェント名）、`parent`（囲んでいる親の `tool_use_id` またはノード ID）を持つ。同期ストリームのトップレベルのイベントではすべて `null` で、ジョブと `include_subagents` で値が入る（[§7.6](#76-長時間実行ジョブと進捗)）。
 
@@ -631,7 +633,7 @@ jobs/{session_id}/{job_id}/events/{seq:06d}   # イベント 1 件ずつ。seq �
 | `text` | アシスタントのメッセージ 1 件につき 1 件（全文）。同期ストリームの差分と同じ型だが、ジョブでは 1 メッセージ分をまとめる |
 | `tool_use` / `tool_result` | ツール呼び出しごと。`tool_result` は既定では `preview` のみで、投入時に `tool_result_detail = "full"` なら `content` も記録する。全文は会話履歴にも入るので容量は重複するが、ジョブの途中でツールの生成物を取り出せる |
 | `interrupt` | 人の入力待ちで止まったとき |
-| `node_start` / `node_stop` / `handoff` | Graph / Swarm のノード遷移（A4 で追加） |
+| `node_start` / `node_stop` / `handoff` | Graph / Swarm のノード遷移 |
 | `result` / `error` | 終端。1 件だけ |
 
 記録されるイベントには `seq`（ジョブ内の連番）と `ts`（記録時刻）が付く。同期ストリームのイベントではこの 2 つは `null` のままにする。
@@ -693,22 +695,179 @@ max_duration_seconds = 28800   # ジョブ 1 件の上限。エージェント�
 
 ## 8. オーケストレーションとエージェント連携
 
-第 1・2 フェーズで実装するのは **Agents-as-Tools**（`subagents`）のみとする。
-Strands が提供する他の方式に対しては、定義フォーマットに次の拡張点を予約する。
+実装済みなのは **Agents-as-Tools**（`subagents`）と **Graph / Swarm**（ロードマップ A4、2026-10-23 に契約を確定し同日に実装）。実モデル（OpenRouter）で、直列・差し戻しループ・並列と合流・入れ子（graph の中の swarm）・上限超過・キャンセル・ノード内の interrupt と再開・ジョブ経由の追従とキャンセルを確認した（`examples/feature-check` の `writing-flow` / `parallel-flow` / `nested-flow` / `loop-flow` / `approval-flow` / `helpdesk`）。
+それ以外の方式は定義フォーマットに拡張点だけを予約する。
 
-| 方式 | Strands の実装 | 定義フォーマットの拡張点 | 備考 |
+### 8.1 方式の一覧
+
+| 方式 | Strands の実装 | 定義フォーマット | 状態 |
 |---|---|---|---|
-| Agents-as-Tools | `Agent.as_tool()` | `subagents = [...]`（実装済みとする） | 最も単純。親が LLM でルーティング |
-| モデル駆動サブエージェント | `strands.vended_tools.make_subagent` | `[subagent_tool]` テーブル（presets / max_depth） | 親が動的にサブエージェントを生成 |
-| Graph | `strands.multiagent.GraphBuilder` | `kind = "graph"` の定義 + `[[nodes]]` `[[edges]]` | 決定的なワークフロー |
-| Swarm | `strands.multiagent.Swarm` / `make_swarm` | `kind = "swarm"` の定義 + `nodes = [...]` | 自律的なハンドオフ |
-| A2A（他ランタイム呼び出し） | `strands.vended_tools.make_a2a_client` | `[a2a_clients]` の `allowed_endpoints` | 別デプロイのエージェントをツール化 |
-| A2A（公開側） | `bedrock_agentcore.runtime.serve_a2a` + `StrandsA2AExecutor` | `runtime.toml` の `protocol = "A2A"` | AgentCore の A2A プロトコルモードでデプロイ |
-| 同一ランタイム内の別エージェント呼び出し | 本ランタイムの `HttpClient`/`AgentCoreClient` をツール化 | — | 自前実装より A2A を優先する |
+| Agents-as-Tools | `Agent.as_tool()` | `subagents = [...]` | 実装済み。親が LLM でルーティングする |
+| Graph | `strands.multiagent.GraphBuilder` | `kind = "graph"` + `nodes` + `[[edges]]` | 実装済み（[§8.2](#82-graph--swarm-の定義フォーマット)〜） |
+| Swarm | `strands.multiagent.Swarm` | `kind = "swarm"` + `nodes` | 実装済み（同上） |
+| モデル駆動サブエージェント | `strands.vended_tools.make_subagent` | `[subagent_tool]`（presets / max_depth） | 予約。要求が出てから |
+| A2A（他ランタイム呼び出し） | `strands.vended_tools.make_a2a_client` | `[a2a_clients]` の `allowed_endpoints` | 予約（ロードマップ C1） |
+| A2A（公開側） | `bedrock_agentcore.runtime.serve_a2a` + `StrandsA2AExecutor` | `runtime.toml` の `protocol = "A2A"` | 予約（同上） |
+| 同一ランタイム内の別エージェント呼び出し | 本ランタイムの `HttpClient` / `AgentCoreClient` をツール化 | — | 自前実装より A2A を優先する |
 
-`agent.toml` に `kind`（既定 `"agent"`）を予約し、Graph/Swarm は別 `kind` として同じ Registry と呼び出し契約で扱う。
-`Invoker` は `AgentBase`/`MultiAgentBase` のどちらも `stream_async` を持つことに依存し、イベント正規化で `multiagent_*` イベントを扱う。
-ネストした実行（サブエージェント、Graph / Swarm のノード）の中のイベントは、どの方式でも `agent` と `parent` で親子関係を表す（[§7.6.8](#768-ネストした実行の可視化)）。
+Strands 1.61 の確認結果で設計に効くもの:
+
+- Graph / Swarm（`MultiAgentBase`）は `stream_async(task, invocation_state)` だけを持ち、`cancel_signal` と `limits` を受け取らない。
+- ノードのエージェントに `SessionManager` を付けると `ValueError` になる。永続化はオーケストレーターが自分の状態（進んだノード、中断状態、Swarm の共有コンテキスト）だけを `SnapshotSessionManager` に書き、**ノードの会話履歴は保存しない**。Swarm はノードを実行するたびに履歴をリセットする。
+- Graph はノードの例外をストリームの外へ投げ（`result` が出ない）、Swarm は例外を飲んで `FAILED` の結果を返す。上限超過はどちらも `FAILED` の結果になる。Swarm はノードの `stop_reason = "cancelled"` を `COMPLETED` として扱う。
+- 最終テキストを取り出すヘルパーはない。`MultiAgentBase` に `as_tool` はない。ノード単位のスパンはなく、`invoke_graph` / `invoke_swarm` が 1 本だけ。
+- Graph の複数の入力エッジは **OR**（1 本でも条件を満たせば実行可能）で、合流（全部を待つ）には条件が要る。
+
+### 8.2 Graph / Swarm の定義フォーマット
+
+Graph / Swarm も `agents_dir` 直下のディレクトリに `agent.toml` を置き、`kind` で種類を宣言する。`prompt.md` は持たない。
+同じ Registry に載り、同じ `agent` 名で `/invocations` から呼べる。公開・非公開（`enabled_agents`）と依存の到達（ノードが参照する定義の読み込み）、循環検出も単体エージェントと同じ扱い。
+
+```toml
+# agents/research-flow/agent.toml
+name = "research-flow"
+kind = "graph"                              # agent（既定）| graph | swarm
+description = "計画 → 執筆 → レビュー（差し戻しあり）"
+entry = ["plan"]                            # 省略時は入ってくるエッジがないノード（全ノードに入力エッジがある循環だけのグラフでは必須）
+output = "review"                           # result.text にするノード。省略時は最後に完了したノード
+reset_on_revisit = true                     # 差し戻しで再実行するとき、ノードの会話を初期状態に戻す（既定 false）
+
+[[nodes]]                                   # 全ノードが定義名 = ID なら nodes = ["plan", "write", ...] の短縮形でもよい（混在は不可）
+agent = "planner"
+id = "plan"                                 # 省略時は agent と同じ
+[[nodes]]
+id = "write"
+agent = "writer"                            # 同じ agents_dir の定義名。graph のノードは agent / graph / swarm のどれでもよい
+[[nodes]]
+id = "review"
+agent = "reviewer"
+[[nodes]]
+id = "publish"
+agent = "publisher"
+wait_for = "all"                            # any（既定。Strands の OR）| all（入ってくるエッジの元ノードが全部完了してから）
+
+[[edges]]
+from = "plan"
+to = "write"
+[[edges]]
+from = "write"
+to = "review"
+[[edges]]
+from = "review"
+to = "write"
+condition = "./conditions.py:needs_rewrite" # (state: GraphState, *, invocation_state) -> bool。副作用を持たせない（複数回評価される）
+[[edges]]
+from = "review"
+to = "publish"
+condition = "./conditions.py:approved"
+
+[session]                                   # 省略時は runtime.toml を継承。HITL（interrupt）の再開に使う（§8.4）
+[limits]
+node_executions = 20                        # ノード実行回数の合計（ループの上限）。省略時は無制限
+timeout_seconds = 900                       # ワークフロー全体の実時間
+node_timeout_seconds = 300                  # ノード 1 回の実時間
+```
+
+```toml
+# agents/support-swarm/agent.toml
+name = "support-swarm"
+kind = "swarm"
+description = "一次受付から担当へ引き継ぐ"
+nodes = ["triage", "billing", "tech"]       # swarm のノードは kind = "agent" の定義に限る（Strands の制約）
+entry = "triage"                            # 省略時は先頭
+
+[limits]
+handoffs = 20                               # 引き継ぎ回数の上限（Strands の max_handoffs と max_iterations の両方に渡す）
+timeout_seconds = 900
+node_timeout_seconds = 300
+repetitive_handoff_window = 8               # 直近 N 回の引き継ぎで
+repetitive_handoff_min_unique_agents = 3    # 異なるエージェントが M 未満なら堂々巡りとみなして止める（0 で無効）
+```
+
+**キーの一覧**
+
+| キー | graph | swarm | 意味 |
+|---|---|---|---|
+| `name` / `kind` / `description` | 必須 | 必須 | `description` は Swarm で「他に呼べるエージェント」の説明としてもモデルに見せる |
+| `nodes` | 必須 | 必須 | 文字列の配列（定義名 = ID）か、`[[nodes]]` テーブルの配列（`id` / `agent` / `wait_for`）。TOML の規則で混在はできない。ID は一意 |
+| `entry` | 任意（配列） | 任意（1 つ） | 開始ノード |
+| `[[edges]]` | 任意 | なし | `from` / `to` / `condition`（コード参照）。同じ `from`→`to` は 1 本 |
+| `output` | 任意 | なし | `result.text` の元。Swarm は常に最後に動いたノード |
+| `reset_on_revisit` | 任意 | なし | |
+| `[limits]` | `node_executions` / `timeout_seconds` / `node_timeout_seconds` | `handoffs` / `timeout_seconds` / `node_timeout_seconds` / `repetitive_handoff_*` | `timeout_seconds` は Strands の `execution_timeout` に渡し、ランタイムの監視タイマー（[§7.2](#72-ストリーミングレスポンスsse) の `timeout`）も同じ値で動かす |
+| `[session]` | 任意 | 任意 | 単体エージェントと同じキー。オーケストレーターの状態の保存先 |
+| `tools` / `skills` / `mcp_servers` / `subagents` / `[model]` / `[context]` / `[structured_output]` / `plugins` / `interventions` / `prompt` | 不可 | 不可 | ノードのエージェント側で定義する |
+
+`validate` が確認すること: ノード ID の一意性、`entry` / `edges` / `output` が存在するノードを指すこと、全ノードに入力エッジがあるグラフでは `entry` があること、`condition` のコード参照が解決できること、Swarm のノードと `subagents` が `kind = "agent"` であること、入れ子の深さが `runtime.max_subagent_depth` 以内であること、定義間の循環（graph の中に自分自身を含む）がないこと。
+`wait_for = "all"` のノードへ向かうエッジには `condition` を書けない（合流条件はランタイムが合成する）。
+
+**条件をコード参照にする理由**: Strands のエッジ条件は呼び出し可能オブジェクトであり、本ランタイムの他の拡張点（ツール、プラグイン、注入関数）もコード参照で統一している。宣言的な式言語（Step Functions の `Choice`、Microsoft Agent Framework の PowerFx）は表現力と引き換えに評価器と文法を抱え込む。よくある合流だけを `wait_for` で宣言できるようにし、それ以外は小さな関数を書いてもらう。同じ判定が定義をまたいで繰り返されるようになったら、構造化テーブル（`{ node, status }` や構造化出力の値の比較）を足す。
+
+### 8.3 組み立て（Factory）
+
+- ノードのエージェントは `subagents` と同じく `persist=False`（`SessionManager` なし）で組み立て、`Agent(name=<ノード ID>)` にする。Swarm はノード ID に `agent.name` を使い、`handoff_to_agent` ツールを `Agent` インスタンスに注入するので、ノードごとに専用のインスタンスを作る（リクエストごとの構築は [ADR-5](#adr-5-agent-はリクエストごとに構築し重い資源はプロセス内でキャッシュする) と同じ）。
+- 使用量の集計フック（`UsageCollector`）は全ノードに付け、`result.metrics.agents` にノード単位の内訳を出す。キーはノード ID。
+- オーケストレーターの `id` は定義名。入れ子（graph の中の graph / swarm）は `"<親の定義名>--<ノード ID>"` で、セッション内で一意にする（Strands の既定 `default_graph` のままだとスナップショットのキーが衝突する）。
+- `[session]` が `none` 以外なら、オーケストレーターに `SnapshotSessionManager(session_id, storage=...)` を付ける。保存先のキーは `session/<session_id>/scopes/multiAgent/<id>/`。`agentcore_memory` バックエンドはオーケストレーターの状態を保存できない（`Storage` ではない）ので、graph / swarm の `[session]` では `local` / `s3` / `none` だけを許す。
+- `wait_for = "all"` のノードには、入ってくるエッジすべてに「元ノードが `completed_nodes` に含まれる」ことを確かめる合成条件を付ける。
+- 入れ子の深さは `subagents` と同じ `runtime.max_subagent_depth` で制限する。
+
+### 8.4 実行の意味論
+
+**呼び出し 1 回 = ワークフロー 1 回**。Graph / Swarm には会話の継続がない。ノードのエージェントは呼び出しごとに新しく作られ、履歴は残らない（Strands の設計どおり）。セッションの役割は次の 2 つに限る。
+
+1. **HITL の再開**: ノードのツールが `interrupt` で止まると、オーケストレーターは進捗（完了したノード、中断したノードとその会話）をスナップショットに保存し、`result.stop_reason = "interrupt"` で返る。同じ `session_id` に `prompt = [{"interruptResponse": ...}]` を送ると、中断したノードだけが再開し、完了済みのノードは再実行されない。`[session] backend = "none"` では再開できないので、`interrupt` が起きた時点で `error`（`InterruptNotResumable`）にする。
+2. **進捗の観測**: ジョブ（[§7.6](#76-長時間実行ジョブと進捗)）のジャーナルと `status` の `last_event` にノードの開始・終了が載る。
+
+完了済みのスナップショットが残っているセッションに新しいプロンプトを送ると、Strands は全ノードをリセットして最初から実行する（意図した挙動）。Swarm の再開は at-least-once で、ノードは重複実行され得る。
+
+ノードへの入力は Strands が組み立てる。Graph では `Original Task: ...` に続けて上流ノードの結果（`From <node>:`）を並べた文、Swarm では `Context:` に続けて引き継ぎメッセージ、元の依頼、これまでに動いたエージェント、共有された知識、他に呼べるエージェント（`description`）を並べた文になる。定義側はこれを前提にプロンプトを書く。
+
+`reset_on_revisit = true` の差し戻しループでは、再実行されるノードは前回の自分の出力も「何回目か」も知らない（入力は毎回 `Original Task` と上流の結果だけ）。終了条件は上流の結果（審査結果など）に置き、`limits.node_executions` を必ず付けて堂々巡りを止める。実モデルの確認では、審査担当が毎回同じ判定を返して上限で止まるケースが実際に起きた。
+
+Swarm の引き継ぎは、`handoff_to_agent` を呼んだエージェントが**自分のターンを終えてから**起きる。ツール結果の後にもう 1 回モデルが呼ばれ、そのテキストがそのノードの最終テキストになる（実モデルでは「担当に引き継ぎました」のような一文になる）。引き継ぎ先のノードが結果を返したら、`result.text` はそのテキストになる。
+
+### 8.5 呼び出し契約の拡張
+
+**イベント**（[§7.2](#72-ストリーミングレスポンスsse) の表に加える）
+
+| `type` | 内容 | 生成元 |
+|---|---|---|
+| `node_start` | `node_id`, `node_type`（`agent` / `multiagent`）, `agent`（ノードが使う定義名） | `multiagent_node_start` |
+| `node_stop` | `node_id`, `status`（`completed` / `failed` / `interrupted` / `cancelled`）, `latency_ms`, `preview`（そのノードの最終テキストの先頭） | `multiagent_node_stop` / `multiagent_node_cancel` |
+| `handoff` | `from_nodes`, `to_nodes`, `message`（Swarm のみ。Graph では `null`） | `multiagent_handoff` |
+
+- ノードの中で起きたイベント（`text`、`tool_use`、`tool_result`、`interrupt`）は `multiagent_node_stream` を解いて流す。`agent` はノードの定義名、`parent` はノード ID。**ノード内のイベントは常に流す**（ワークフローの本体はノードの中にあり、隠すとテキストが何も届かない）。`include_subagents` が制御するのは、ノードのエージェントがさらに `subagents` で呼んだ孫のイベントだけ。
+- 入れ子のオーケストレーターのノードイベントは、外側のノード ID を `parent` に持つ。
+- Graph が中断したノードには `node_stop` が出ない（Strands の挙動）。`interrupt` イベント（`parent` = ノード ID）と `result`（`stop_reason = "interrupt"`）で表す。
+- 実装上の注意: Strands の `multiagent_handoff` は `message` キーを持ち、履歴に追加されたメッセージのイベント（`message` キー）と形が重なる。正規化では `type` が `multiagent_` で始まるイベントを先に振り分ける。
+- ジョブでは `node_start` / `node_stop` / `handoff` をジャーナルに記録し、`last_event.summary` にノード ID を入れる（[§7.6.4](#764-ジャーナル) の表の「A4 で追加」の項目）。
+
+**結果**
+
+| 状況 | 返すもの |
+|---|---|
+| `COMPLETED` | `result`。`stop_reason = "end_turn"`、`text` は Graph なら `output` ノード（省略時は最後に完了したノード）、Swarm なら最後に動いたノードの最終テキスト |
+| `INTERRUPTED` | `interrupt` + `result`（`stop_reason = "interrupt"`） |
+| ランタイムが停止を要求した（`cancel` / タイムアウト） | `result`（`stop_reason = "cancelled"` / `"timeout"`）。Swarm は `cancelled` を `COMPLETED` と報告するため、ランタイムが自分の要求を覚えていて置き換える |
+| `FAILED`（上限超過、ノードの失敗） | `error`。`error_type` は `GraphFailed` / `SwarmFailed`、`message` に理由（どの上限か、どのノードがどう失敗したか）。Graph がノードの例外をストリームの外へ投げる場合も同じ `error` に正規化する |
+
+`result` には `nodes`（ノード ID → `{ status, agent, execution_count, latency_ms, text }`）を加える。単体エージェントでは `null`。`metrics` はこれまでどおりツリー全体の合計と `agents` の内訳（ノード ID ごと）。
+
+**停止**: ランタイムの `cancel_signal`（クライアント切断、`cancel`、タイムアウト）が立ったら、組み立て時に控えた全ノードのエージェントに `Agent.cancel()` を送る。Graph では停止したノードの下流が打ち切られ、兄弟の枝は続く。実行中でないノードは開始されない。猶予（`CANCEL_DRAIN_SECONDS`）の扱いは単体エージェントと同じ。
+
+**制限**: `limits.timeout_seconds` は Strands の `execution_timeout`（バッチ境界でしか検査されない）に渡すと同時に、ランタイムの監視タイマーでも使う。単体エージェント向けの `turns` / `output_tokens` / `total_tokens` は graph / swarm では使えず、ノードのエージェント側の `[limits]` で指定する。
+
+### 8.6 観測性
+
+Strands が作るスパンは `invoke_graph` / `invoke_swarm`（`gen_ai.operation.name` も同じ）が 1 本で、各ノードの `invoke_agent` はその子になる。ランタイムの `strands_runtime.usage.*` はこれまでどおりルートに付ける。ノード単位の記録はスパンではなく `node_start` / `node_stop` イベント（ジョブならジャーナル）で持つ。
+
+### 8.7 採用しなかったもの
+
+- **宣言的な条件式**（[§8.2](#82-graph--swarm-の定義フォーマット) の理由）。
+- **Graph / Swarm を `subagents` に書く**: `MultiAgentBase` に `as_tool` がなく、ラッパーが要る。graph のノードに graph / swarm を置けるので、入れ子はそちらで表す。必要になれば `@tool` のラッパーで足す。
+- **ノード単位のスパン**: SDK にない。イベントで足りる。
+- **`make_subagent`（動的な子生成）**: A4 の後。
 
 ---
 
@@ -992,6 +1151,12 @@ CI サービスや AWS アカウントがなくても進められるよう、検
 - **背景**: 1 時間を超える実行は、どの基盤でも接続を保ったままでは完走できない。一方、本ランタイムの HTTP 契約は `/invocations` と `/ping` だけで、AgentCore ではこれ以外のルートもクライアントのヘッダーも使えない。プロセス内の状態は microVM の終了やレプリカの入れ替えで消える。
 - **決定**: ジョブの受付・状態・追従・結果・キャンセルをすべて `/invocations` のペイロードの `mode` で表す。進捗と結果はセッションストレージのジャーナルに書き、プロセス内のタスクは「実行する場所」にすぎないものとする。進捗の語彙は同期ストリームのイベント型をそのまま使い、連番 `seq` で再開できるようにする。再起動後の自動再開、コールバック配送、同一セッションのキューイングは持たない。
 - **理由**: エンドポイントを増やさなければ、ローカル・コンテナ基盤・AgentCore で同じクライアントが動く。ジャーナルをストレージに置けば `status` / `result` / `follow` はどのプロセスでも答えられ、プロセスが消えたジョブも心拍の途絶から確定できる。先行事例（OpenAI background mode、LangGraph runs、A2A Task、MCP Tasks）が共有する最小の語彙に合わせることで、将来 A2A の Task に対応づけるときも状態の変換だけで済む。
+
+### ADR-8: Graph / Swarm は呼び出し 1 回で完結するワークフローとして扱い、条件はコード参照で書く
+
+- **背景**: Strands の Graph / Swarm はノードのエージェントに `SessionManager` を付けられず、オーケストレーターの状態（進んだノード、中断状態）だけを保存する。Swarm はノード実行のたびに履歴をリセットする。エッジ条件は呼び出し可能オブジェクトである。
+- **決定**: Graph / Swarm を会話を持たないワークフローと位置づけ、セッションは HITL の再開と進捗の観測にだけ使う。定義はノードを定義名で参照し、条件はコード参照、よくある合流だけ `wait_for = "all"` で宣言する。失敗は `error`、停止と中断は `result` の `stop_reason` に正規化し、ノードの遷移は `node_start` / `node_stop` / `handoff` で流す。
+- **理由**: SDK が持たない会話の継続をランタイムで模倣すると、ノードの履歴管理という SDK 側の設計判断と衝突する。会話が要るなら単体エージェントが Graph を呼ぶ構成（将来のラッパー）か、クライアント側で前回の結果をプロンプトに含める方が素直。条件に式言語を入れると評価器と文法を抱え込むので、他の拡張点と同じコード参照に揃え、頻出パターンだけ宣言化する。
 
 ## 付録 B. 参照
 

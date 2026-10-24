@@ -11,8 +11,8 @@
 agents_dir = "./agents"                  # エージェント定義の置き場。直下の各ディレクトリが 1 エージェント
 default_agent = "reference"              # ペイロードの agent 省略時に使う名前（省略可）
 # enabled_agents = ["reference"]         # 公開するエージェントを絞る（省略時は agents_dir 配下の全定義）。
-                                         # subagents で参照される定義は、公開しなくても読み込まれる
-max_subagent_depth = 3                   # subagents の入れ子の深さの上限（1〜10）
+                                         # subagents や graph / swarm のノードで参照される定義は、公開しなくても読み込まれる
+max_subagent_depth = 3                   # 入れ子の深さの上限（1〜10）。subagents と graph / swarm のノードの両方に適用
 
 [model]
 # [model] を持たない（id も module も書かない）エージェントが使う既定のモデル ID。

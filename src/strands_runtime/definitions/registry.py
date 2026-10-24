@@ -1,7 +1,7 @@
 """ランタイムプロセスが知っているエージェント定義の集合。
 
 「公開する」エージェント（クライアントが名前で呼べるもの）と「読み込む」エージェント
-（公開するものと、そこから ``subagents`` で到達できるものすべて）を区別する。
+（公開するものと、そこから ``subagents`` や Graph / Swarm のノードで到達できるものすべて）を区別する。
 ``runtime.toml`` の ``enabled_agents`` で公開範囲を絞れば、同じイメージを複数のデプロイで使い分けられる。
 """
 
@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from strands_runtime.definitions.loader import AGENT_FILE, ResolvedAgent, load_agent
-from strands_runtime.definitions.schema import RuntimeConfig
+from strands_runtime.definitions.schema import AgentDefinition, RuntimeConfig, SwarmDefinition, dependencies_of
 from strands_runtime.errors import DefinitionError, UnknownAgentError
 
 
@@ -72,14 +72,14 @@ class Registry:
         return self._agents[name]
 
     def dependency(self, name: str) -> ResolvedAgent:
-        """``subagents`` の解決に使う、読み込み済みのエージェント（公開していなくてもよい）。"""
+        """``subagents`` やノードの解決に使う、読み込み済みの定義（公開していなくてもよい）。"""
         try:
             return self._agents[name]
         except KeyError as exc:
-            raise DefinitionError(f"subagent {name!r} is not defined") from exc
+            raise DefinitionError(f"referenced definition {name!r} is not defined") from exc
 
     def _reachable(self, roots: list[str]) -> list[str]:
-        """``roots`` から ``subagents`` をたどって到達できる名前（重複なし、深さ優先）。"""
+        """``roots`` から ``subagents`` とノードをたどって到達できる名前（重複なし、深さ優先）。"""
         seen: list[str] = []
         stack = list(roots)
         while stack:
@@ -87,21 +87,39 @@ class Registry:
             if name in seen:
                 continue
             seen.append(name)
-            stack.extend(self._agents[name].definition.subagents)
+            stack.extend(dependencies_of(self._agents[name].definition))
         return seen
 
     def _validate_graph(self) -> None:
-        """``subagents`` の参照先が存在し、循環していないことを確認する。"""
+        """参照先が存在し、種類の制約を満たし、循環していないことを確認する。
+
+        ``subagents`` と Swarm のノードは ``kind = "agent"`` に限る（Strands の ``as_tool`` と ``Swarm`` の制約）。
+        Graph のノードはどの種類でもよい。
+        """
         for agent in self._agents.values():
-            for sub in agent.definition.subagents:
-                if sub not in self._agents:
-                    raise DefinitionError(f"subagent {sub!r} is not defined", source=str(agent.directory / AGENT_FILE))
+            source = str(agent.directory / AGENT_FILE)
+            d = agent.definition
+            for dep in dependencies_of(d):
+                if dep not in self._agents:
+                    raise DefinitionError(f"{d.kind} {d.name!r} references undefined {dep!r}", source=source)
+            if isinstance(d, AgentDefinition):
+                agents_only, where = d.subagents, "subagents"
+            elif isinstance(d, SwarmDefinition):
+                agents_only, where = d.dependencies, "swarm nodes"
+            else:
+                agents_only, where = [], ""
+            for dep in agents_only:
+                target = self._agents[dep].definition
+                if not isinstance(target, AgentDefinition):
+                    raise DefinitionError(
+                        f"{where} must be kind = 'agent', but {dep!r} is a {target.kind}", source=source
+                    )
         for name in self._agents:
             self._check_cycle(name, [])
 
     def _check_cycle(self, name: str, path: list[str]) -> None:
         if name in path:
             cycle = " -> ".join([*path[path.index(name) :], name])
-            raise DefinitionError(f"subagent cycle detected: {cycle}")
-        for sub in self._agents[name].definition.subagents:
-            self._check_cycle(sub, [*path, name])
+            raise DefinitionError(f"definition cycle detected: {cycle}")
+        for dep in dependencies_of(self._agents[name].definition):
+            self._check_cycle(dep, [*path, name])

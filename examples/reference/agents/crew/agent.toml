@@ -1,0 +1,21 @@
+# kind = "swarm" の全設定項目（リファレンス）。自律的なハンドオフ（Strands の Swarm）。
+#
+# - ノードは kind = "agent" の定義に限る。各ノードには handoff_to_agent ツールが注入され、
+#   他のノードの description を見て引き継ぎ先を選ぶ。
+# - 引き継ぎは、ツールを呼んだエージェントが自分のターンを終えてから起きる。引き継ぎがなければ完了。
+
+name = "crew"
+kind = "swarm"
+description = "helper が受け付け、必要なら reference に引き継ぐ"
+nodes = ["helper", "reference"]             # [[nodes]] テーブル（id / agent）でも書ける
+entry = "helper"                            # 省略時は先頭
+
+[session]
+backend = "inherit"
+
+[limits]
+handoffs = 10                               # 引き継ぎ回数の上限（Strands の max_handoffs と max_iterations の両方）
+timeout_seconds = 600
+node_timeout_seconds = 120
+repetitive_handoff_window = 8               # 直近 8 回の引き継ぎで
+repetitive_handoff_min_unique_agents = 3    # 異なるエージェントが 3 未満なら堂々巡りとみなして止める（0 で無効）

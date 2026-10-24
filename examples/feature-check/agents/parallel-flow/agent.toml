@@ -1,0 +1,30 @@
+name = "parallel-flow"
+kind = "graph"
+description = "見出しを作り、本文と要約を並列に作って、審査で合流する（wait_for = all の動作確認用）"
+output = "reviewer"
+
+[[nodes]]
+agent = "outliner"
+[[nodes]]
+agent = "drafter"
+[[nodes]]
+agent = "summarizer"
+[[nodes]]
+agent = "reviewer"
+wait_for = "all"
+
+[[edges]]
+from = "outliner"
+to = "drafter"
+[[edges]]
+from = "outliner"
+to = "summarizer"
+[[edges]]
+from = "drafter"
+to = "reviewer"
+[[edges]]
+from = "summarizer"
+to = "reviewer"
+
+[limits]
+timeout_seconds = 300

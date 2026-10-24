@@ -15,6 +15,7 @@ from strands.tools.mcp import MCPClient
 from strands.vended_plugins.skills import AgentSkills, Skill
 
 from strands_runtime.definitions.loader import ResolvedAgent
+from strands_runtime.definitions.schema import AgentDefinition
 from strands_runtime.errors import DefinitionError
 from strands_runtime.factory.references import load_attribute, resolve_instance
 from strands_runtime.factory.sessions import SessionContext
@@ -59,6 +60,8 @@ def build_context_injectors(agent: ResolvedAgent, session: SessionContext) -> li
     """``[context] inject`` の各項目を SDK の ``ContextInjector`` にする（ユーザーターンごとの一時的な注入）。"""
     from strands.vended_plugins.context_injector import ContextInjector, InjectionContext
 
+    if not isinstance(agent.definition, AgentDefinition):
+        return []
     spec = agent.definition.context
     plugins: list[Plugin] = []
     for entry in spec.inject:

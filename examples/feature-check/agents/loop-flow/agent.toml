@@ -1,0 +1,17 @@
+name = "loop-flow"
+kind = "graph"
+description = "終わらない循環を node_executions で止める（上限超過の動作確認用）"
+nodes = ["outliner", "summarizer"]
+entry = ["outliner"]
+reset_on_revisit = true
+
+[[edges]]
+from = "outliner"
+to = "summarizer"
+[[edges]]
+from = "summarizer"
+to = "outliner"
+
+[limits]
+node_executions = 3
+timeout_seconds = 120

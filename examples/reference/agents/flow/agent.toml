@@ -1,0 +1,51 @@
+# kind = "graph" の全設定項目（リファレンス）。決定的なワークフロー（Strands の GraphBuilder）。
+#
+# - prompt.md、tools、[model] などエージェント向けのキーは持たない。ノードの設定は参照先の agent.toml に置く。
+# - 呼び出し 1 回でワークフローを 1 回実行する。ノードの会話は呼び出しをまたいで残らない。
+# - [session] はオーケストレーターの状態（進んだノード、中断状態）の保存先で、HITL の再開に使う。
+
+name = "flow"
+kind = "graph"
+description = "reference → helper と流し、helper の結果で分岐し、merge で合流する"
+entry = ["reference"]                       # 開始ノード。省略時は入ってくるエッジがないノード（全ノードに入力エッジがあるなら必須）
+output = "merge"                            # result.text にするノード。省略時は最後に完了したノード
+reset_on_revisit = false                    # 差し戻しで同じノードを再実行するとき、会話を初期状態に戻す。
+                                            # 再実行されるノードは前回の出力も回数も知らないので、ループには limits.node_executions を付ける
+
+# ノード。全ノードが「定義名 = ノード ID」なら nodes = ["reference", "helper"] の短縮形でもよい（テーブル形式と混在は不可）。
+[[nodes]]
+agent = "reference"                         # 同じ agents_dir の定義名。graph のノードは agent / graph / swarm のどれでもよい
+[[nodes]]
+agent = "helper"                            # id を省略すると agent と同じ
+[[nodes]]
+id = "helper-again"                         # 同じ定義を別ノードとして使うときは id を付ける
+agent = "helper"
+[[nodes]]
+id = "merge"
+agent = "helper"
+wait_for = "all"                            # any（既定。入ってくるエッジのどれか 1 本が条件を満たせば実行）
+                                            # | all（入ってくるエッジの元ノードが全部完了してから。並列の合流に使う）
+
+# エッジ。condition は (state: GraphState, *, invocation_state) -> bool へのコード参照。省略時は常に進む。
+# wait_for = "all" のノードへ向かうエッジには condition を書けない（合流条件はランタイムが合成する）。
+[[edges]]
+from = "reference"
+to = "helper"
+[[edges]]
+from = "helper"
+to = "helper-again"
+condition = "./conditions.py:needs_follow_up"
+[[edges]]
+from = "helper"
+to = "merge"
+[[edges]]
+from = "helper-again"
+to = "merge"
+
+[session]
+backend = "inherit"                         # inherit | local | s3 | none。agentcore_memory は使えない
+
+[limits]
+node_executions = 10                        # ノード実行回数の合計（ループの上限）。省略時は無制限
+timeout_seconds = 600                       # ワークフロー全体の実時間（Strands の execution_timeout と、ランタイムの監視タイマー）
+node_timeout_seconds = 120                  # ノード 1 回の実時間

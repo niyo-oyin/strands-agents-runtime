@@ -137,7 +137,7 @@ api_key_env = "LOCAL_LLM_API_KEY"      # 値ではなく変数名。OPENAI_API_K
 
 ## 設定項目のリファレンス（examples/reference）
 
-`runtime.toml` と `agent.toml` の全設定項目を、説明コメント付きで書いた定義が [examples/reference](examples/reference) にある。
+`runtime.toml` と `agent.toml` の全設定項目を、説明コメント付きで書いた定義が [examples/reference](examples/reference) にある（単体エージェントは `agents/reference`、Graph は `agents/flow`、Swarm は `agents/crew`）。
 補助ファイル（ツール、スキル、Cedar ポリシー、Plugin、注入関数、構造化出力のスキーマ、MCP サーバー）も揃えてあり、`make check` の `validate --mcp` が毎回通す。
 設定を追加するときは、スキーマ（`definitions/schema.py`）とこの定義を一緒に更新する。
 
@@ -158,6 +158,7 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml ru
 - イベント: `start` → `text` / `reasoning` / `tool_use` / `tool_result` … → `result`（`stop_reason`、`text`、`structured_output`、`metrics`）または `error`。
 - `stop_reason` は Strands の値に加え、`structured_output`（構造化回答）と `timeout`（`[limits] timeout_seconds` 超過）をランタイムが返す。
 - 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）は `prompt = [{"interruptResponse": {...}}]` で再開。
+- `kind = "graph"` / `"swarm"` の定義で Graph / Swarm を宣言し、同じ契約で呼べる。ノードの遷移は `node_start` / `node_stop` / `handoff` イベント、ノード別の結果は `result.nodes`（設計文書 §8）。
 - `mode`（`run` / `job` / `status` / `follow` / `result` / `cancel`）でジョブを操作する。ジョブのイベントには `seq` / `ts` が付き、`follow` は `after` から再生する。`include_subagents = true` でサブエージェント内のイベントを `agent` / `parent` 付きで流す。
 - ジョブのジャーナルは `[session]` の `local` / `s3` に置く（`[jobs] storage` で別の置き場も指定できる）。`agentcore_memory` / `none` の構成では `[jobs]` を明示しない限りジョブは無効。
 - 実モデルの結合テスト: `uv run --env-file .env pytest tests_integ -q`

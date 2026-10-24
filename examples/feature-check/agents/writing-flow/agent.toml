@@ -1,0 +1,22 @@
+name = "writing-flow"
+kind = "graph"
+description = "見出し → 本文 → 審査。差し戻しなら本文へ戻る（Graph の動作確認用）"
+output = "drafter"
+reset_on_revisit = true
+
+nodes = ["outliner", "drafter", "reviewer"]
+
+[[edges]]
+from = "outliner"
+to = "drafter"
+[[edges]]
+from = "drafter"
+to = "reviewer"
+[[edges]]
+from = "reviewer"
+to = "drafter"
+condition = "./conditions.py:needs_rewrite"
+
+[limits]
+node_executions = 6
+timeout_seconds = 300

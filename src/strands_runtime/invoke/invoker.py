@@ -14,17 +14,27 @@ from typing import Any, Literal, cast
 
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from strands import Agent
 from strands.agent.agent_result import AgentResult
+from strands.multiagent import MultiAgentBase, MultiAgentResult, Status
+from strands.multiagent.base import NodeResult
+from strands.multiagent.graph import GraphResult
+from strands.multiagent.swarm import SwarmResult
 from strands.types.agent import AgentInput, Limits
 
-from strands_runtime.definitions.schema import RuntimeConfig
+from strands_runtime.definitions.registry import Registry
+from strands_runtime.definitions.schema import AgentDefinition, GraphDefinition, RuntimeConfig, SwarmDefinition
 from strands_runtime.errors import SessionBusyError, StrandsRuntimeError, UnknownAgentError
 from strands_runtime.events import (
     AgentUsageEvent,
     ErrorEvent,
+    HandoffEvent,
     InterruptEvent,
     InterruptInfo,
     Metrics,
+    NodeStartEvent,
+    NodeStopEvent,
+    NodeSummary,
     ReasoningEvent,
     ResultEvent,
     StartEvent,
@@ -33,7 +43,7 @@ from strands_runtime.events import (
     ToolUseEvent,
 )
 from strands_runtime.factory import AgentFactory, SessionContext
-from strands_runtime.factory.sessions import ANONYMOUS_ACTOR
+from strands_runtime.factory.sessions import ANONYMOUS_ACTOR, effective_session_spec
 from strands_runtime.invoke.usage import UsageCollector
 
 logger = logging.getLogger(__name__)
@@ -41,6 +51,8 @@ logger = logging.getLogger(__name__)
 TOOL_RESULT_PREVIEW_CHARS = 500
 CANCEL_DRAIN_SECONDS = 15.0
 """タイムアウトで停止を要求してから、エージェントが片付け（履歴の保存など）を終えるのを待つ猶予。"""
+CANCEL_POLL_SECONDS = 0.2
+"""Graph / Swarm は ``cancel_signal`` を受け取らないので、この間隔で信号を見てノードのエージェントに ``cancel()`` を送る。"""
 
 ToolResultDetail = Literal["preview", "full"]
 Mode = Literal["run", "job", "status", "follow", "result", "cancel"]
@@ -138,6 +150,7 @@ class Invoker:
             coalesce_text=coalesce_text,
             timeout_cap=timeout_cap,
             span_attributes=span_attributes,
+            node_maps=_node_maps(self._factory.registry, name),
         )
         try:
             yield StartEvent(agent=name, session_id=session.session_id)
@@ -149,18 +162,30 @@ class Invoker:
     async def _execute(self, run: _Run) -> AsyncIterator[Any]:
         """Agent を組み立てて実行し、イベントを流す。タイムアウト・キャンセル・後始末もここで扱う。"""
         definition = self._factory.registry.get(run.agent_name).definition
-        limits = definition.limits.to_limits() if definition.limits else None
         timeout = _min_timeout(definition.limits.timeout_seconds if definition.limits else None, run.timeout_cap)
         inner: AsyncIterator[dict[str, Any]] | None = None
+        canceller: asyncio.Task[None] | None = None
         try:
             assert run.request.prompt is not None  # mode が run / job なら検証済み
-            agent = self._factory.build(run.agent_name, run.session, hooks=[run.usage])
-            inner = agent.stream_async(
-                decode_prompt(run.request.prompt),
-                invocation_state=dict(run.request.invocation_state),
-                limits=cast("Limits | None", limits or None),
-                cancel_signal=run.cancel,
-            )
+            run.kind = definition.kind
+            executor = self._factory.build(run.agent_name, run.session, hooks=[run.usage])
+            prompt = decode_prompt(run.request.prompt)
+            if isinstance(executor, Agent):
+                assert isinstance(definition, AgentDefinition)
+                limits = definition.limits.to_limits() if definition.limits else None
+                inner = executor.stream_async(
+                    prompt,
+                    invocation_state=dict(run.request.invocation_state),
+                    limits=cast("Limits | None", limits or None),
+                    cancel_signal=run.cancel,
+                )
+            else:
+                # Graph / Swarm。cancel_signal も limits も受け取らないので、停止は各ノードの Agent.cancel() に流す。
+                assert isinstance(definition, GraphDefinition | SwarmDefinition)
+                run.output_node = definition.output if isinstance(definition, GraphDefinition) else None
+                run.resumable = effective_session_spec(definition.session, self._config.session).backend != "none"
+                inner = executor.stream_async(cast(Any, prompt), invocation_state=dict(run.request.invocation_state))
+                canceller = asyncio.create_task(_propagate_cancel(run.cancel, executor))
             # タイムアウトは 2 段構え。
             # 1. 監視タイマーが ``cancel_signal`` を立て、エージェントは次の安全な地点で停止して履歴を保存する
             #    （``stop_reason`` が "timeout" の ``result`` が返る）。
@@ -180,7 +205,8 @@ class Invoker:
             yield run.error(type(exc).__name__, str(exc))
         except Exception as exc:
             logger.exception("invocation failed (agent=%s session=%s)", run.agent_name, run.session.session_id)
-            yield run.error(type(exc).__name__, str(exc))
+            # Graph はノードの例外をストリームの外へ投げる。Swarm の FAILED 結果と同じ種別に揃える。
+            yield run.error(run.failure_type or type(exc).__name__, str(exc))
         finally:
             # 結果もエラーも出していないのに finally に来るのは、クライアントが切断したか、途中で抜けた場合。
             # エージェントの実行を続けても誰も受け取らないので、停止を要求する。
@@ -188,6 +214,8 @@ class Invoker:
                 run.cancel.set()
             if inner is not None:
                 await _aclose(inner)
+            if canceller is not None:
+                canceller.cancel()
         if not run.terminal:
             yield run.error("NoResult", "the agent stopped without producing a result")
 
@@ -203,6 +231,43 @@ class Invoker:
             if final is None and isinstance(event, ResultEvent | ErrorEvent):
                 final = event
         return final if final is not None else ErrorEvent(error_type="NoResult", message="the agent produced no result")
+
+
+async def _propagate_cancel(signal: threading.Event, executor: MultiAgentBase) -> None:
+    """ランタイムの停止信号を、オーケストレーター配下の全エージェントの ``cancel()`` に変える。"""
+    while not signal.is_set():
+        await asyncio.sleep(CANCEL_POLL_SECONDS)
+    for agent in _agents_in(executor):
+        agent.cancel()
+
+
+def _agents_in(executor: MultiAgentBase) -> list[Agent]:
+    """Graph / Swarm（入れ子を含む）のノードにある ``Agent`` をすべて集める。"""
+    agents: list[Agent] = []
+    for node in getattr(executor, "nodes", {}).values():
+        inner = node.executor
+        if isinstance(inner, Agent):
+            agents.append(inner)
+        elif isinstance(inner, MultiAgentBase):
+            agents.extend(_agents_in(inner))
+    return agents
+
+
+def _node_maps(registry: Registry, root: str) -> dict[str, dict[str, str]]:
+    """定義名 → （ノード ID → ノードが使う定義名）。ノードのイベントに ``agent`` を付けるための対応表。"""
+    maps: dict[str, dict[str, str]] = {}
+    stack = [root]
+    while stack:
+        name = stack.pop()
+        if name in maps:
+            continue
+        definition = registry.dependency(name).definition
+        if isinstance(definition, GraphDefinition | SwarmDefinition):
+            maps[name] = {node.node_id: node.agent for node in definition.node_specs}
+            stack.extend(definition.dependencies)
+        else:
+            maps[name] = {}
+    return maps
 
 
 def _min_timeout(*values: float | None) -> float | None:
@@ -234,6 +299,7 @@ class _Run:
         coalesce_text: bool = False,
         timeout_cap: float | None = None,
         span_attributes: dict[str, Any] | None = None,
+        node_maps: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self.request = request
         self.agent_name = agent_name
@@ -242,7 +308,13 @@ class _Run:
         self.coalesce_text = coalesce_text
         self.timeout_cap = timeout_cap
         self.span_attributes = dict(span_attributes or {})
+        self.node_maps = node_maps or {}
+        # Graph / Swarm のとき "graph" / "swarm"。失敗の種別と結果の取り出し方が変わる。
+        self.kind = "agent"
+        # オーケストレーターの状態を保存できる構成か。保存できなければ interrupt は再開できない。
+        self.resumable = True
         self.timed_out = False
+        self.output_node: str | None = None
         # ``result`` か ``error`` を出したら True。出さずに終わった場合の後始末と ``NoResult`` の判定に使う。
         self.terminal = False
         self.usage = UsageCollector()
@@ -257,22 +329,48 @@ class _Run:
         self.terminal = True
         return ErrorEvent(error_type=error_type, message=message)
 
+    @property
+    def failure_type(self) -> str | None:
+        """Graph / Swarm の失敗の種別。単体エージェントでは例外クラス名をそのまま使うので ``None``。"""
+        return {"graph": "GraphFailed", "swarm": "SwarmFailed"}.get(self.kind)
+
     def normalize(self, raw: dict[str, Any]) -> list[Any]:
         """Strands の生イベント 1 つを、0 個以上のランタイムイベントにする。"""
-        return self._normalize(raw, agent=None, parent=None)
+        return self._normalize(
+            raw, agent=None, parent=None, node_level=False, node_map=self.node_maps.get(self.agent_name, {})
+        )
 
-    def _normalize(self, raw: dict[str, Any], *, agent: str | None, parent: str | None) -> list[Any]:
-        """``agent`` / ``parent`` が付いているのはサブエージェント内のイベント。結果は親の tool_result に畳まれるので出さない。"""
+    def _normalize(
+        self,
+        raw: dict[str, Any],
+        *,
+        agent: str | None,
+        parent: str | None,
+        node_level: bool,
+        node_map: dict[str, str],
+    ) -> list[Any]:
+        """``agent`` / ``parent`` が付いているのはネストした実行の中のイベント。
+
+        ``node_level`` は Graph / Swarm のノード直下のイベント。ワークフローの本体はノードの中にあるので、
+        サブエージェント（親の tool_result に畳まれる）とは違い、差分も推論も通常どおり流す。
+        ``node_map`` は現在のオーケストレーターのノード ID → 定義名。
+        """
+        # Graph / Swarm のイベントは先に振り分ける。``multiagent_handoff`` は ``message`` キーを持ち、
+        # 後段の「履歴に追加されたメッセージ」の判定と衝突するため。
+        if str(raw.get("type", "")).startswith("multiagent_"):
+            return self._from_multiagent(raw, parent=parent, node_map=node_map)
         nested = parent is not None
+        hidden = nested and not node_level  # agents-as-tools の子: 差分と推論は出さず、本文はメッセージ単位
         if "data" in raw and isinstance(raw["data"], str) and raw["data"]:
-            # 差分は、ジョブ（メッセージ単位にまとめる）とサブエージェント（常にメッセージ単位）では流さない。
-            return [] if self.coalesce_text or nested else [TextEvent(text=raw["data"])]
-        if raw.get("reasoningText"):
-            if nested or not self.request.include_reasoning:
+            if self.coalesce_text or hidden:
                 return []
-            return [ReasoningEvent(text=str(raw["reasoningText"]))]
+            return [TextEvent(text=raw["data"], agent=agent, parent=parent)]
+        if raw.get("reasoningText"):
+            if hidden or not self.request.include_reasoning:
+                return []
+            return [ReasoningEvent(text=str(raw["reasoningText"]), agent=agent, parent=parent)]
         if "message" in raw:
-            return self._from_message(raw["message"], agent=agent, parent=parent, coalesce=self.coalesce_text or nested)
+            return self._from_message(raw["message"], agent=agent, parent=parent, coalesce=self.coalesce_text or hidden)
         if "result" in raw and isinstance(raw["result"], AgentResult):
             if nested:
                 return []
@@ -282,6 +380,119 @@ class _Run:
             return self._from_tool_stream(raw["tool_stream_event"])
         # ``force_stop`` の後には SDK が例外を再送出するので、ここでは何も出さず例外側で 1 つの ``error`` にする。
         return []
+
+    def _from_multiagent(self, raw: dict[str, Any], *, parent: str | None, node_map: dict[str, str]) -> list[Any]:
+        """Graph / Swarm のイベント。ノードの中のイベントは ``multiagent_node_stream`` を解いて、親子関係を付けて流す。"""
+        kind = raw["type"]
+        node_id = str(raw.get("node_id", ""))
+        node_agent = node_map.get(node_id)
+        match kind:
+            case "multiagent_node_start":
+                return [
+                    NodeStartEvent(
+                        node_id=node_id, node_type=str(raw.get("node_type", "")), agent=node_agent, parent=parent
+                    )
+                ]
+            case "multiagent_node_stop":
+                nr = raw.get("node_result")
+                if not isinstance(nr, NodeResult):
+                    return []
+                return [
+                    NodeStopEvent(
+                        node_id=node_id,
+                        status=nr.status.value,
+                        latency_ms=nr.execution_time,
+                        preview=_clip(_node_text(nr)),
+                        agent=node_agent,
+                        parent=parent,
+                    )
+                ]
+            case "multiagent_node_cancel":
+                return [
+                    NodeStopEvent(
+                        node_id=node_id,
+                        status="cancelled",
+                        preview=_clip(str(raw.get("message", ""))),
+                        agent=node_agent,
+                        parent=parent,
+                    )
+                ]
+            case "multiagent_handoff":
+                return [
+                    HandoffEvent(
+                        from_nodes=[str(n) for n in raw.get("from_node_ids", [])],
+                        to_nodes=[str(n) for n in raw.get("to_node_ids", [])],
+                        message=raw.get("message"),
+                        parent=parent,
+                    )
+                ]
+            case "multiagent_node_interrupt":
+                interrupts = [InterruptInfo(id=i.id, name=i.name, reason=i.reason) for i in raw.get("interrupts", [])]
+                return [InterruptEvent(interrupts=interrupts, agent=node_agent, parent=node_id)]
+            case "multiagent_node_stream":
+                child = raw.get("event")
+                if not isinstance(child, dict):
+                    return []
+                inner_map = self.node_maps.get(node_agent or "", {})
+                return self._normalize(child, agent=node_agent, parent=node_id, node_level=True, node_map=inner_map)
+            case "multiagent_result":
+                result = raw.get("result")
+                if parent is not None or not isinstance(result, MultiAgentResult):
+                    return []
+                self.terminal = True
+                return self._from_multiagent_result(result, node_map=node_map)
+            case _:
+                return []
+
+    def _from_multiagent_result(self, result: MultiAgentResult, *, node_map: dict[str, str]) -> list[Any]:
+        """ワークフローの終端。停止・中断・完了は ``result``、失敗は ``error`` に正規化する。"""
+        cancelled_by_runtime = self.cancel.is_set()
+        if result.status == Status.FAILED and not cancelled_by_runtime:
+            return [ErrorEvent(error_type=self.failure_type or "MultiAgentFailed", message=_failure_message(result))]
+        if result.status == Status.INTERRUPTED and not self.resumable:
+            return [
+                ErrorEvent(
+                    error_type="InterruptNotResumable",
+                    message="a node interrupted, but [session] backend = 'none' cannot save the state needed to resume",
+                )
+            ]
+        if result.status == Status.INTERRUPTED:
+            stop_reason = "interrupt"
+        elif cancelled_by_runtime:
+            stop_reason = "timeout" if self.timed_out else "cancelled"
+        else:
+            stop_reason = "end_turn"
+
+        agent_results = [ar for nr in result.results.values() for ar in nr.get_agent_results()]
+        metrics = self._metrics(
+            fallback_usage=cast(dict[str, int], dict(result.accumulated_usage)),
+            cycles=sum(ar.metrics.cycle_count for ar in agent_results),
+            tool_calls=sum(m.call_count for ar in agent_results for m in ar.metrics.tool_metrics.values()),
+        )
+        _record_usage_on_span(self.agent_name, self.session, metrics, self.span_attributes)
+        return [
+            ResultEvent(
+                agent=self.agent_name,
+                session_id=self.session.session_id,
+                stop_reason=stop_reason,
+                text=_final_text(result, self._output_node()),
+                metrics=metrics,
+                nodes={
+                    node_id: NodeSummary(
+                        status=nr.status.value,
+                        agent=node_map.get(node_id, ""),
+                        execution_count=nr.execution_count,
+                        latency_ms=nr.execution_time,
+                        text=_node_text(nr),
+                    )
+                    for node_id, nr in result.results.items()
+                },
+            )
+        ]
+
+    def _output_node(self) -> str | None:
+        """Graph の ``output``（``result.text`` にするノード）。``_Run`` は定義を持たないので request から辿れる情報だけで決める。"""
+        return self.output_node
 
     def _from_tool_stream(self, stream_event: Any) -> list[Any]:
         """サブエージェントが親のストリームに転送してきたイベントを、親子関係を付けて正規化する。
@@ -298,7 +509,13 @@ class _Run:
             return []
         if not ({"data", "message", "result", "tool_stream_event", "reasoningText"} & child.keys()):
             return []
-        return self._normalize(child, agent=str(tool_use.get("name", "")), parent=str(tool_use.get("toolUseId", "")))
+        return self._normalize(
+            child,
+            agent=str(tool_use.get("name", "")),
+            parent=str(tool_use.get("toolUseId", "")),
+            node_level=False,
+            node_map={},
+        )
 
     def _from_message(self, message: Any, *, agent: str | None, parent: str | None, coalesce: bool) -> list[Any]:
         """履歴に追加されたメッセージから、ツール呼び出し・ツール結果（と、まとめる場合は本文）のイベントを取り出す。"""
@@ -347,7 +564,11 @@ class _Run:
                     interrupts=[InterruptInfo(id=i.id, name=i.name, reason=i.reason) for i in result.interrupts]
                 )
             )
-        metrics = self._metrics(result)
+        metrics = self._metrics(
+            fallback_usage=cast(dict[str, int], dict(result.metrics.accumulated_usage)),
+            cycles=result.metrics.cycle_count,
+            tool_calls=sum(m.call_count for m in result.metrics.tool_metrics.values()),
+        )
         _record_usage_on_span(self.agent_name, self.session, metrics, self.span_attributes)
         events.append(
             ResultEvent(
@@ -363,11 +584,11 @@ class _Run:
         )
         return events
 
-    def _metrics(self, result: AgentResult) -> Metrics:
-        """エージェントツリー全体の合計は collector から取る。collector が空ならルートの値で代用する。"""
+    def _metrics(self, *, fallback_usage: dict[str, int], cycles: int, tool_calls: int) -> Metrics:
+        """エージェントツリー全体の合計は collector から取る。collector が空なら SDK の累計値で代用する。"""
         totals = self.usage.totals()
         if not self.usage.agents:
-            totals.add(cast(dict[str, int], dict(result.metrics.accumulated_usage)))
+            totals.add(fallback_usage)
         return Metrics(
             input_tokens=totals.input_tokens,
             output_tokens=totals.output_tokens,
@@ -376,8 +597,8 @@ class _Run:
             cache_write_tokens=totals.cache_write_tokens,
             # レイテンシーは SDK の値ではなく、呼び出し全体の実時間をランタイムで測る（報告しないプロバイダーがある）。
             latency_ms=int((time.monotonic() - self._started) * 1000),
-            cycles=result.metrics.cycle_count,
-            tool_calls=sum(m.call_count for m in result.metrics.tool_metrics.values()),
+            cycles=cycles,
+            tool_calls=tool_calls,
             model_failures=self.usage.model_failures,
             agents={
                 name: AgentUsageEvent(
@@ -449,6 +670,41 @@ def _decode_block(block: dict[str, Any]) -> dict[str, Any]:
                 decoded = dict(source, bytes=base64.b64decode(source["bytes"]))
                 return {**block, key: {**media, "source": decoded}}
     return block
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= TOOL_RESULT_PREVIEW_CHARS else text[:TOOL_RESULT_PREVIEW_CHARS] + "…"
+
+
+def _node_text(node_result: NodeResult) -> str:
+    """ノードの最終テキスト。入れ子のオーケストレーターなら最後のエージェントの回答、例外ならその文。"""
+    inner = node_result.result
+    if isinstance(inner, AgentResult):
+        return _message_text(inner.message)
+    if isinstance(inner, MultiAgentResult):
+        agent_results = node_result.get_agent_results()
+        return _message_text(agent_results[-1].message) if agent_results else ""
+    return str(inner)
+
+
+def _final_text(result: MultiAgentResult, output_node: str | None) -> str:
+    """Swarm は最後に動いたノード、Graph は ``output``（なければ最後に完了したノード）の最終テキスト。"""
+    node_id: str | None = None
+    if isinstance(result, SwarmResult):
+        node_id = result.node_history[-1].node_id if result.node_history else None
+    elif isinstance(result, GraphResult):
+        node_id = output_node or (result.execution_order[-1].node_id if result.execution_order else None)
+    if node_id is None or node_id not in result.results:
+        return ""
+    return _node_text(result.results[node_id])
+
+
+def _failure_message(result: MultiAgentResult) -> str:
+    """失敗したノードとその理由。ノードが失敗していなければ上限（実行回数、時間、堂々巡り）による停止。"""
+    failed = [f"{node_id}: {nr.result}" for node_id, nr in result.results.items() if nr.status == Status.FAILED]
+    if failed:
+        return "node(s) failed: " + "; ".join(failed)
+    return "workflow stopped by its limits (node executions, timeout, or repetitive handoffs)"
 
 
 def _preview(content: list[Any]) -> str:

@@ -1,0 +1,9 @@
+name = "helpdesk"
+kind = "swarm"
+description = "一次受付から担当へ引き継ぐ（Swarm の動作確認用）"
+nodes = ["triage", "billing", "tech"]
+entry = "triage"
+
+[limits]
+handoffs = 4
+timeout_seconds = 180

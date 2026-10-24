@@ -1,0 +1,8 @@
+name = "gatekeeper"
+description = "公開前に人の承認を求める"
+tools = ["./tools/approve.py"]
+
+[model]
+id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
