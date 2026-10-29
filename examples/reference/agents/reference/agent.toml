@@ -48,10 +48,15 @@ id = "openai-chat/deepseek/deepseek-v4.1-flash-1017"  # "provider/model-id"
 # module = "./model.py:make_model"                     # Model（または ModelRouter）を返す関数へのコード参照
 effort = "auto"                                        # auto | off | minimal | low | medium | high | xhigh | max（推論の深さ。対応モデルのみ）
 caching = true                                         # プロンプトキャッシュ（既定 true）
-base_url = "https://openrouter.ai/api/v1"              # openai-chat 専用。省略時は OPENAI_BASE_URL
-api_key_env = "OPENROUTER_API_KEY"                     # openai-chat 専用。キーを持つ環境変数の名前（省略時は OPENAI_API_KEY）
+base_url = "https://openrouter.ai/api/v1"              # openai / openai-chat 専用。省略時は OPENAI_BASE_URL
+api_key_env = "OPENROUTER_API_KEY"                     # openai / openai-chat 専用。キーを持つ環境変数の名前（省略時は OPENAI_API_KEY）
+# Responses API 互換の Azure OpenAI v1 を使う場合は、上の 3 項目を次に置き換える:
+# id = "openai/my-deployment"                         # Azure のデプロイ名
+# base_url = "https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/"
+# api_key_env = "AZURE_OPENAI_API_KEY"
 # 呼び出し失敗時に順に試す候補（ModelRouter + FallbackStrategy）。
 # 文字列は id だけの指定で、effort・caching・接続先・キー・config を主モデルから引き継ぐ。テーブルで個別に上書きできる。
+# 接続先とキーを引き継ぐのは同じプロバイダー同士だけ（openai 同士 / openai-chat 同士）。
 fallbacks = [
   "openai-chat/xiaomi/mimo-v2.6-pro",
   { id = "openai-chat/gpt-5.5-mini", base_url = "https://api.openai.com/v1", api_key_env = "OPENAI_API_KEY", effort = "low" },
@@ -70,7 +75,8 @@ tools_ttl = true                                       # ツール定義をキ�
 context_window_limit = 128000                          # OpenAI 互換モデルでは SDK が知らないので指定する（使用率の見積もりに使う）
 # max_tokens = 4096
 # temperature = 0.2
-# params = { top_p = 0.9 }                             # openai-chat: Chat Completions のパラメータ
+# params = { top_p = 0.9 }                             # openai / openai-chat: API に渡すパラメータ（effort 由来の値も上書き）
+# params = {}                                         # openai: 推論パラメータを送らない。推論非対応のデプロイなどで指定
 
 [context]
 manager = "off"                                        # off | auto | agentic。auto / agentic は大きなツール結果の切り詰めと

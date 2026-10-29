@@ -25,9 +25,6 @@ OPENAI_CHAT_PROVIDER = "openai-chat"
 1 つのランタイムで同時に使える。
 """
 
-DEFAULT_SENTINEL = "__default__"
-"""``[model]`` に ``id`` も ``module`` もないことを表す番兵。``runtime.toml`` の既定モデル ID に置き換える。"""
-
 
 def build_model(spec: ModelSpec, defaults: ModelDefaults) -> Model | ModelRouter:
     """1 エージェント分のモデルを組み立てる。
@@ -37,7 +34,10 @@ def build_model(spec: ModelSpec, defaults: ModelDefaults) -> Model | ModelRouter
     ``openai-chat/`` はランタイム独自の ``OpenAIModel`` 構築、``module`` 参照はそのまま使う。
     その後 ``[model.cache]`` と ``config`` を全候補に適用し、候補が複数なら失敗時に切り替える ``ModelRouter`` に包む。
     """
-    candidates = spec.candidates()
+    try:
+        candidates = spec.candidates(default_id=defaults.default_id)
+    except ValueError as exc:
+        raise DefinitionError(str(exc)) from exc
     cache = CacheConfig(**spec.cache.model_dump()) if spec.cache is not None else None
     built = [_build_candidate(c, spec, defaults, cache) for c in candidates]
 
@@ -66,8 +66,10 @@ def _build_candidate(
         if effort != "auto":
             logger.warning("effort=%r is ignored for a model module; configure reasoning in the module", effort)
     else:
-        model_id = defaults.default_id if candidate.id in (None, DEFAULT_SENTINEL) else candidate.id
+        model_id = candidate.id
         assert model_id is not None
+        if model_id in ("openai/", f"{OPENAI_CHAT_PROVIDER}/"):
+            raise DefinitionError(f"model id {model_id!r} needs a model name after the slash")
         if model_id.startswith(f"{OPENAI_CHAT_PROVIDER}/"):
             model = _openai_chat(
                 model_id.removeprefix(f"{OPENAI_CHAT_PROVIDER}/"),
@@ -76,8 +78,6 @@ def _build_candidate(
                 api_key_env=candidate.api_key_env,
             )
         else:
-            if candidate.base_url or candidate.api_key_env:
-                raise DefinitionError(f"base_url / api_key_env need an '{OPENAI_CHAT_PROVIDER}/' id, got {model_id!r}")
             model = resolve_model(
                 model_id,
                 default=defaults.default_id,
@@ -86,6 +86,12 @@ def _build_candidate(
                 # ``caching`` を明示した場合は、キャッシュ非対応のプロバイダーで警告ではなくエラーにしてもらう。
                 caching_explicit="caching" in spec.model_fields_set,
             )
+            if model_id.startswith("openai/"):
+                from strands.models.openai_responses import OpenAIResponsesModel
+
+                # ハーネスの effort 変換を保ち、SDK が公開しているクライアント引数に接続設定を渡す。
+                assert isinstance(model, OpenAIResponsesModel)
+                model.client_args.update(_openai_client_args(candidate.base_url, candidate.api_key_env))
 
     if isinstance(model, ModelRouter):
         # ルーターには設定を適用する先（個々のモデル）がないため、候補側で設定してもらう。
@@ -106,8 +112,16 @@ def _openai_chat(model_name: str, *, effort: str, base_url: str | None, api_key_
     """OpenAI 互換 Chat Completions の ``OpenAIModel`` を作る。"""
     from strands.models.openai import OpenAIModel  # extras の [openai] が必要
 
-    if not model_name:
-        raise DefinitionError(f"model id '{OPENAI_CHAT_PROVIDER}/' needs a model name after the slash")
+    model = OpenAIModel(client_args=_openai_client_args(base_url, api_key_env) or None, model_id=model_name)
+    if effort not in ("auto", "off"):
+        # Chat Completions では推論の強さを ``reasoning_effort`` で指定する。
+        # 対応していない互換サーバーはリクエストごと拒否するので、定義で明示されたときだけ送る。
+        model.update_config(params={"reasoning_effort": effort})
+    return model
+
+
+def _openai_client_args(base_url: str | None, api_key_env: str | None) -> dict[str, Any]:
+    """エージェント固有の接続設定。未指定の値は OpenAI SDK の環境変数解決に任せる。"""
     client_args: dict[str, Any] = {}
     if base_url:
         client_args["base_url"] = base_url
@@ -116,12 +130,7 @@ def _openai_chat(model_name: str, *, effort: str, base_url: str | None, api_key_
             client_args["api_key"] = os.environ[api_key_env]
         except KeyError as exc:
             raise DefinitionError(f"environment variable {api_key_env!r} (api_key_env) is not set") from exc
-    model = OpenAIModel(client_args=client_args or None, model_id=model_name)
-    if effort not in ("auto", "off"):
-        # Chat Completions では推論の強さを ``reasoning_effort`` で指定する。
-        # 対応していない互換サーバーはリクエストごと拒否するので、定義で明示されたときだけ送る。
-        model.update_config(params={"reasoning_effort": effort})
-    return model
+    return client_args
 
 
 def model_label(model: Model | ModelRouter) -> str:

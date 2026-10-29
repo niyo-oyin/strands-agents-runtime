@@ -253,8 +253,8 @@ timeout_seconds = 120                    # ランタイムが強制する実時�
 | `model.config` | table | `{}` | `model.update_config(**config)`。キーはプロバイダーの `*Config` TypedDict |
 | `model.fallbacks` | list[str or table] | `[]` | 失敗時に順に試す候補。文字列は `id` で、effort・caching・接続先・キー・config を主から継承。テーブル（`id` / `module`、`effort`、`base_url`、`api_key_env`、`config`）で個別指定。1 つでもあれば `ModelRouter`（`FallbackStrategy`）になる |
 | `model.cache` | table | なし | Strands `CacheConfig` のキー（`strategy`、`ttl`、`system_prompt_ttl`、`cache_key`、`tools_ttl`）。`caching = true` が前提。主と全候補に適用 |
-| `model.base_url` | str | なし | `openai-chat/` 専用。接続先（省略時 `OPENAI_BASE_URL`） |
-| `model.api_key_env` | str | なし | `openai-chat/` 専用。キーを保持する環境変数名（省略時 `OPENAI_API_KEY`） |
+| `model.base_url` | str | なし | `openai/` / `openai-chat/` 専用。接続先（省略時 `OPENAI_BASE_URL`） |
+| `model.api_key_env` | str | なし | `openai/` / `openai-chat/` 専用。キーを保持する環境変数名（省略時 `OPENAI_API_KEY`） |
 | `model.module` | `"pkg.mod:factory"` | なし | 7 プロバイダー以外や `ModelRouter` を使う逃げ道。`id` と排他 |
 | `tools` | list[str] | `[]` | `Agent(tools=[...])` に文字列のまま渡す（SDK のローダーを使う）。相対パスは定義ディレクトリ基準で絶対化 |
 | `skills` | list[str] | `["./skills"]`（存在時） | `AgentSkills(skills=[...])` を `plugins` に追加 |
@@ -377,7 +377,11 @@ def build(self, d: AgentDefinition, session: SessionContext) -> Agent:
 - 例外として **`openai-chat/<model>`** は本ランタイム固有のプロバイダーで、`strands.models.OpenAIModel`（Chat Completions）を直接構築する。
   ハーネスの `openai/` は Responses API を使うため、Chat Completions しか実装しない OpenAI 互換サーバー（vLLM、Ollama、LiteLLM プロキシ等）に接続できない。
   エンドポイントは `model.base_url` または環境変数 `OPENAI_BASE_URL`、キーは `model.api_key_env` で名指しした環境変数（既定 `OPENAI_API_KEY`）。
-  `base_url` と `api_key_env` をエージェントごとに持てるため、OpenAI 公式と互換サーバーを 1 つのランタイムで同時に使える。`effort` は明示されたときだけ `reasoning_effort` として送る。
+  `base_url` と `api_key_env` をエージェントごとに持てるため、OpenAI 公式と互換サーバーを 1 つのランタイムで同時に使える。`openai-chat/` の `effort` は明示されたときだけ `reasoning_effort` として送る。
+- **`openai/<model>`** も `base_url` / `api_key_env` を受け付ける。ハーネスが生成する `OpenAIResponsesModel` の公開 `client_args` に渡し、effort の変換と config・キャッシュの適用は維持する。
+  Azure OpenAI v1 では `base_url = "https://<resource>.openai.azure.com/openai/v1/"` と `id = "openai/<デプロイ名>"` を使う（API キー認証、`api-version` 不要）。
+  `id` を省いた場合も既定モデルのプロバイダーを確定してから接続設定を検証する。フォールバック候補への接続設定の継承は、同じ API プロバイダー同士に限定する。
+  `openai/` の `effort = "auto"` は `high`、`off` は `none`。推論パラメータを受け付けないデプロイでは `[model.config] params = {}` で上書きできる。
 - `model.config` は `Model.update_config(**config)` でプロバイダー固有設定を上書きする。
   キー名は Strands 各プロバイダーの `*Config` TypedDict に従う（例: Bedrock は `max_tokens`、`temperature`、`guardrail_id`、`service_tier`。Anthropic は `max_tokens`、`params`）。
   ランタイムはキーを解釈しない。

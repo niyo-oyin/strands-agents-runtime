@@ -114,8 +114,9 @@ def test_openai_chat_missing_api_key_env_is_reported(tmp_path: Path, monkeypatch
         runtime.factory.build("a", SESSION)
 
 
-def test_openai_chat_base_url_requires_that_provider(tmp_path: Path) -> None:
-    write_agent(tmp_path / "agents", "a", model_table='[model]\nid = "openai/gpt-x"\nbase_url = "http://x"\n')
+@pytest.mark.parametrize("provider", ["bedrock", "anthropic", "ollama"])
+def test_openai_base_url_rejects_other_providers(tmp_path: Path, provider: str) -> None:
+    write_agent(tmp_path / "agents", "a", model_table=f'[model]\nid = "{provider}/m"\nbase_url = "http://x"\n')
     with pytest.raises(DefinitionError, match="base_url"):
         Runtime.load(write_runtime(tmp_path))
 

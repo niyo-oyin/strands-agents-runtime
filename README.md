@@ -2,7 +2,7 @@
 
 [Strands Agents SDK](https://strandsagents.com/) 上で、エージェントを **TOML（設定）と Markdown（プロンプト）で宣言**し、
 同じ成果物をローカル・Docker・任意のコンテナ基盤（ECS、Azure Container Apps など）・Amazon Bedrock AgentCore Runtime で動かすためのランタイムです。
-設計の詳細は [docs/design.md](docs/design.md) を参照してください。
+セットアップ、モデル設定、examples の選び方は [利用マニュアル](docs/manual.md) を参照してください。
 
 ## 構成
 
@@ -51,7 +51,7 @@ uv sync
 uv run strands-runtime validate                     # 定義・コード参照・SKILL.md の検証（--mcp で MCP 接続も）
 uv run strands-runtime list                         # 公開エージェント一覧
 uv run strands-runtime run assistant "今日は何日？"   # サーバーなしで 1 回実行
-uv run strands-runtime serve                        # http://127.0.0.1:8080
+uv run strands-runtime serve --port 8080            # http://127.0.0.1:8080
 ```
 
 ### Windows（PowerShell）
@@ -63,7 +63,7 @@ API キーは `.env.example` をコピーして編集し、`--env-file` で渡�
 Copy-Item .env.example .env
 # .env の値を編集してから実行
 uv run --env-file .env strands-runtime run assistant "今日は何日？"
-uv run --env-file .env strands-runtime serve
+uv run --env-file .env strands-runtime serve --port 8080
 ```
 
 HTTP 呼び出しは、別の PowerShell で次のように実行できます。
@@ -103,7 +103,7 @@ result = client.invoke("続きをお願い", agent="assistant", session_id=sid)
 print(result.text, result.metrics)
 ```
 
-長時間の実行は接続を保たずにジョブとして投入し、後から進捗と結果を取る（設計文書 §7.6）。
+長時間の実行は接続を保たずにジョブとして投入し、後から進捗と結果を取れます。
 
 ```python
 job = client.submit("…時間のかかる依頼…", agent="assistant")      # mode="job"。すぐ返る
@@ -141,10 +141,36 @@ uv run --env-file .env strands-runtime run assistant "今日は何日？"
 
 | id の形式 | 使う API | 用途 |
 |---|---|---|
-| `openai/<model>` | OpenAI Responses API（strands-harness 経由、effort 変換あり） | OpenAI 本家 |
-| `openai-chat/<model>` | Chat Completions（`strands.models.OpenAIModel`） | OpenAI 互換サーバー全般。`[model] base_url` で接続先、`api_key_env` でキーの環境変数名を指定可 |
+| `openai/<model>` | OpenAI Responses API（strands-harness 経由、effort 変換あり） | OpenAI、Azure OpenAI v1、Responses API 互換サーバー |
+| `openai-chat/<model>` | Chat Completions（`strands.models.OpenAIModel`） | Chat Completions 互換サーバー |
+
+どちらも `[model] base_url` で接続先、`api_key_env` でキーを持つ環境変数名を指定できます。
+省略時は OpenAI SDK が `OPENAI_BASE_URL` / `OPENAI_API_KEY` を読みます。
+エージェントの `id` を省略して `runtime.toml` の `default_id` を使う場合も、接続先とキーを指定できます。
+
+Azure OpenAI の例:
+
+```toml
+[model]
+id = "openai/my-deployment"                     # Azure に作成したデプロイ名
+base_url = "https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/"
+api_key_env = "AZURE_OPENAI_API_KEY"
+
+[model.config]
+params = {}                                    # 推論パラメータを送らず、デプロイ側の既定値を使う
+```
+
+`.env` に `AZURE_OPENAI_API_KEY=...` を設定し、`uv run --env-file .env strands-runtime run assistant "こんにちは"` で実行します。
+`base_url` は `/responses` を含めず `/openai/v1/` までを指定し、`id` の `openai/` より後ろにはデプロイ名を書きます。
+この設定は API キー認証の v1 API 向けで、`api-version` は不要です（[Microsoft の公式手順](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle?tabs=key)）。
+Microsoft Entra ID の自動トークン更新が必要な場合は、既存の `model.module` でクライアント引数にトークン取得関数を渡すモデルファクトリを用意します。
+
+`openai/` の `effort = "auto"` は既存のハーネスに従って `high`、`off` は `none` に変換されます。
+上の `params = {}` はこの推論設定を上書きします。推論を調整する場合は `params = {}` を外し、`[model] effort = "low"` など、デプロイが対応する値を指定してください。
 
 失敗時に別のモデルへ切り替えるには `fallbacks` を書きます（Strands の `ModelRouter`）。プロンプトキャッシュの調整は `[model.cache]`（Strands の `CacheConfig` のキーそのまま）です。
+接続先とキーは同じプロバイダー同士（`openai/` 同士、または `openai-chat/` 同士）の場合だけ主モデルから継承します。
+別の接続先へ切り替える候補では、テーブル形式で `base_url` と `api_key_env` をそれぞれ指定してください。
 
 ```toml
 [model]
@@ -193,7 +219,7 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml ru
 - イベント: `start` → `text` / `reasoning` / `tool_use` / `tool_result` … → `result`（`stop_reason`、`text`、`structured_output`、`metrics`）または `error`。
 - `stop_reason` は Strands の値に加え、`structured_output`（構造化回答）と `timeout`（`[limits] timeout_seconds` 超過）をランタイムが返す。
 - 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）は `prompt = [{"interruptResponse": {...}}]` で再開。
-- `kind = "graph"` / `"swarm"` の定義で Graph / Swarm を宣言し、同じ契約で呼べる。ノードの遷移は `node_start` / `node_stop` / `handoff` イベント、ノード別の結果は `result.nodes`（設計文書 §8）。
+- `kind = "graph"` / `"swarm"` の定義で Graph / Swarm を宣言し、同じ契約で呼べる。ノードの遷移は `node_start` / `node_stop` / `handoff` イベント、ノード別の結果は `result.nodes`。
 - `mode`（`run` / `job` / `status` / `follow` / `result` / `cancel`）でジョブを操作する。ジョブのイベントには `seq` / `ts` が付き、`follow` は `after` から再生する。`include_subagents = true` でサブエージェント内のイベントを `agent` / `parent` 付きで流す。
 - ジョブのジャーナルは `[session]` の `local` / `s3` に置く（`[jobs] storage` で別の置き場も指定できる）。`agentcore_memory` / `none` の構成では `[jobs]` を明示しない限りジョブは無効。
 - 実モデルの結合テスト: `uv run --env-file .env pytest tests_integ -q`
@@ -244,7 +270,7 @@ curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' -
 契約が `POST /invocations` と `GET /ping` だけなので、イメージを 1 サービスとして動かすだけです。
 ヘルスチェックは `/ping`、セッション ID はペイロードの `session_id` で足ります（AgentCore のヘッダーは任意）。
 セッションの保存先は `s3` か永続ボリュームの `local`、認証は前段のロードバランサーや API Gateway、トレースは標準の `OTEL_*` でコレクターへ送ります。
-x86_64 の基盤では `--platform linux/amd64` でビルドしてください。詳細は設計文書 §11.3。
+x86_64 の基盤では `--platform linux/amd64` でビルドしてください。
 
 ## AgentCore へのデプロイ（CDK）
 

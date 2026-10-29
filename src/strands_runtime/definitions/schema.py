@@ -35,11 +35,13 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-def _check_openai_chat_only(obj: ModelCandidate | ModelSpec, prefix: str) -> None:
-    """``base_url`` と ``api_key_env`` は ``openai-chat/`` プロバイダー専用の設定であることを確認する。"""
+def _check_openai_connection(obj: ModelCandidate | ModelSpec, prefix: str) -> None:
+    """接続先とキーの指定を、OpenAI の Responses / Chat Completions プロバイダーに限定する。"""
     for key in ("base_url", "api_key_env"):
-        if getattr(obj, key) is not None and obj.id is not None and not obj.id.startswith("openai-chat/"):
-            raise ValueError(f"{prefix}{key} is only valid with an 'openai-chat/<model>' id")
+        if getattr(obj, key) is not None and (
+            obj.module is not None or (obj.id is not None and not obj.id.startswith(("openai/", "openai-chat/")))
+        ):
+            raise ValueError(f"{prefix}{key} is only valid with an 'openai/<model>' or 'openai-chat/<model>' id")
 
 
 class ModelCandidate(_Strict):
@@ -56,7 +58,7 @@ class ModelCandidate(_Strict):
     def _one_of(self) -> ModelCandidate:
         if (self.id is None) == (self.module is None):
             raise ValueError("a fallback needs exactly one of id or module")
-        _check_openai_chat_only(self, "fallbacks[].")
+        _check_openai_connection(self, "fallbacks[].")
         return self
 
 
@@ -84,9 +86,9 @@ class ModelSpec(_Strict):
     effort: Effort = "auto"
     caching: bool = True
     base_url: NonBlankStr | None = None
-    """``openai-chat`` プロバイダー（OpenAI 互換 Chat Completions）の接続先。省略時は ``OPENAI_BASE_URL``。"""
+    """``openai`` / ``openai-chat`` の接続先。省略時は ``OPENAI_BASE_URL``。"""
     api_key_env: NonBlankStr | None = None
-    """``openai-chat`` のキーを保持する環境変数の名前。省略時は ``OPENAI_API_KEY``。
+    """``openai`` / ``openai-chat`` のキーを保持する環境変数の名前。省略時は ``OPENAI_API_KEY``。
 
     値ではなく変数名だけを TOML に書く。
     エージェントごとに別の変数を指せるので、公式 OpenAI と互換サーバーを同じランタイムで同時に使える。
@@ -102,7 +104,7 @@ class ModelSpec(_Strict):
     def _consistent(self) -> ModelSpec:
         if self.id is not None and self.module is not None:
             raise ValueError("model.id and model.module are mutually exclusive")
-        _check_openai_chat_only(self, "model.")
+        _check_openai_connection(self, "model.")
         if self.cache is not None and not self.caching:
             raise ValueError("model.cache needs caching = true")
         # ``[model.config]`` の後に ``tools = [...]`` を書くと TOML 上は ``model.config.tools`` になる。
@@ -115,27 +117,24 @@ class ModelSpec(_Strict):
             )
         return self
 
-    def candidates(self) -> list[ModelCandidate]:
+    def candidates(self, *, default_id: str) -> list[ModelCandidate]:
         """主モデルを先頭に、継承を解決済みのフォールバック候補を並べて返す。"""
-        # ``id`` も ``module`` もない場合は runtime.toml の既定モデルを使う。番兵 ``__default__`` を factory 側が解釈する。
-        primary = (
-            ModelCandidate(
-                id=self.id,
-                module=self.module,
-                effort=self.effort,
-                base_url=self.base_url,
-                api_key_env=self.api_key_env,
-                config=self.config,
-            )
-            if (self.id or self.module)
-            else ModelCandidate(id="__default__", effort=self.effort, config=self.config)
+        # 既定モデルのプロバイダーを確定してから、接続設定の検証と継承を行う。
+        primary = ModelCandidate(
+            id=self.id or (default_id if self.module is None else None),
+            module=self.module,
+            effort=self.effort,
+            base_url=self.base_url,
+            api_key_env=self.api_key_env,
+            config=self.config,
         )
         resolved = [primary]
         for entry in self.fallbacks:
             candidate = ModelCandidate(id=entry) if isinstance(entry, str) else entry
-            # 接続先とキーは、主も候補も ``openai-chat/`` のときだけ引き継ぐ（他プロバイダーでは意味を持たない）。
-            inherit_openai_chat = (candidate.id or "").startswith("openai-chat/") and (self.id or "").startswith(
-                "openai-chat/"
+            # 同じ API プロバイダーの候補だけに接続先とキーを引き継ぐ。
+            inherit_connection = any(
+                (candidate.id or "").startswith(prefix) and (primary.id or "").startswith(prefix)
+                for prefix in ("openai/", "openai-chat/")
             )
             resolved.append(
                 ModelCandidate(
@@ -143,11 +142,11 @@ class ModelSpec(_Strict):
                     module=candidate.module,
                     effort=candidate.effort if candidate.effort is not None else self.effort,
                     base_url=candidate.base_url
-                    if candidate.base_url is not None or not inherit_openai_chat
+                    if candidate.base_url is not None or not inherit_connection
                     else self.base_url,
                     api_key_env=(
                         candidate.api_key_env
-                        if candidate.api_key_env is not None or not inherit_openai_chat
+                        if candidate.api_key_env is not None or not inherit_connection
                         else self.api_key_env
                     ),
                     config=candidate.config if candidate.config is not None else self.config,
