@@ -25,14 +25,22 @@ src/strands_runtime/
 
 ## 開発（ローカル CI）
 
-CI サービスがなくても同じ検査を手元で回せます。
+CI サービスがなくても、Windows（PowerShell）・macOS・Linux で同じ検査を手元で回せます。
+uv と、CDK の合成・テストに必要な Node.js を用意してください。Python は `.python-version` に従って uv が用意します。
 
-```bash
-make check      # ruff → mypy → pytest → validate（コミット前の一式）
-make hooks      # pre-commit を導入: コミット時に lint/型、プッシュ時に test/validate
-make integ      # 実モデルの結合テスト（.env の OPENROUTER_API_KEY が必要）
-make docker-build && make docker-run
+```text
+uv sync --locked
+uv run python scripts/dev.py check         # ruff → mypy → pytest → validate（コミット前の一式）
+uv run python scripts/dev.py hooks         # コミット時に lint/型、プッシュ時に test/validate
+uv run python scripts/dev.py integ         # 実モデルの結合テスト（.env の OPENROUTER_API_KEY が必要）
+uv run python scripts/dev.py docker-build
+uv run python scripts/dev.py docker-run
 ```
+
+`make` がある環境では `make check` なども同じ Python コマンドを呼びます。
+`uv run python scripts/dev.py --help` でタスク一覧を確認できます。
+設定ファイルやイメージ名は `--config runtime.toml` / `--image strands-runtime:dev` で指定できます。
+Docker 関連タスクには Docker が必要です（Windows では Linux コンテナを使用）。
 
 `[session] backend = "s3"` は moto（S3 のプロセス内モック）で往復を検証しています（`tests/test_s3_session.py`）。実バケットでの確認はフェーズ 2。
 
@@ -45,6 +53,33 @@ uv run strands-runtime list                         # 公開エージェント�
 uv run strands-runtime run assistant "今日は何日？"   # サーバーなしで 1 回実行
 uv run strands-runtime serve                        # http://127.0.0.1:8080
 ```
+
+### Windows（PowerShell）
+
+上記の `uv` コマンドは PowerShell からそのまま実行できます。Bash や `make`、仮想環境の手動アクティベートは不要です。
+API キーは `.env.example` をコピーして編集し、`--env-file` で渡します。
+
+```powershell
+Copy-Item .env.example .env
+# .env の値を編集してから実行
+uv run --env-file .env strands-runtime run assistant "今日は何日？"
+uv run --env-file .env strands-runtime serve
+```
+
+HTTP 呼び出しは、別の PowerShell で次のように実行できます。
+
+```powershell
+$body = @{ agent = "assistant"; prompt = "こんにちは"; stream = $false } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8080/invocations -Method Post `
+  -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+```
+
+TOML のパスは `./agents` のように `/` で書けば OS 間で共有できます。
+Windows の絶対パスを書く場合は、`dir = 'C:\work\sessions'` のようにシングルクォートを使うとバックスラッシュのエスケープが不要です。
+コード参照も `'C:\work\schemas.py:Answer'` の形式で指定できます。
+日本語・絵文字を含む CLI 出力をファイルや他のプロセスに渡す場合は、`$env:PYTHONUTF8 = "1"` を設定してください。
+
+### Bash での HTTP 呼び出し
 
 ```bash
 curl -N -X POST localhost:8080/invocations \
@@ -173,6 +208,17 @@ OTLP を受ける LLM 可視化ツール（Arize Phoenix、Langfuse、LangSmith�
 make phoenix-up      # Arize Phoenix を Docker で起動（UI: http://localhost:6006）
 OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
   uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run coordinator "要約して: ..."
+```
+
+PowerShell では環境変数を `$env:` で設定します。
+
+```powershell
+uv run python scripts/dev.py phoenix-up
+$env:OTEL_TRACES_EXPORTER = "otlp"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:6006"
+$env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
+uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run coordinator "要約して: ..."
+uv run python scripts/dev.py phoenix-down
 ```
 
 ## Docker

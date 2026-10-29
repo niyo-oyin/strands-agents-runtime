@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, TypeVar
 
-from strands_runtime.definitions.loader import is_path_reference
+from strands_runtime.definitions.loader import is_path_reference, split_reference
 from strands_runtime.errors import ReferenceResolutionError
 
 T = TypeVar("T")
@@ -37,8 +37,8 @@ def _import_file(path: Path) -> Any:
 
 def load_attribute(reference: str) -> Any:
     """``module:attr`` が指すオブジェクトを返す。``module`` はモジュールパスか、絶対パスの ``.py`` ファイル。"""
-    module_part, sep, attr = reference.partition(":")
-    if not sep or not attr:
+    module_part, attr = split_reference(reference)
+    if not module_part or not attr:
         raise ReferenceResolutionError(f"{reference!r} must be of the form 'module:attribute'")
     if is_path_reference(module_part):
         module = _import_file(Path(module_part))

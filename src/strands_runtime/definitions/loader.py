@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import tomllib
@@ -91,21 +92,35 @@ def load_runtime_config(path: Path) -> RuntimeConfig:
         raise DefinitionError(_describe(exc), source=str(path)) from exc
 
 
+def split_reference(value: str) -> tuple[str, str | None]:
+    """``path[:attr]`` / ``module[:attr]`` を分ける。Windows のドライブ文字のコロンは保持する。"""
+    drive, tail = ntpath.splitdrive(value)
+    # ``x:factory`` のような 1 文字のモジュール名をドライブ相対パスと取り違えない。
+    if len(drive) == 2 and not tail.startswith(("/", "\\")) and not tail.partition(":")[0].endswith((".py", ".cedar")):
+        drive, tail = "", value
+    head, sep, attr = tail.partition(":")
+    return drive + head, attr if sep else None
+
+
 def is_path_reference(value: str) -> bool:
     """ツールやプラグインの参照文字列が、モジュールではなくファイルを指しているかを判定する。
 
-    Strands がツール文字列に使う規則と同じで、``./`` ``../`` ``/`` ``~`` で始まるか ``.py`` で終わればファイル、
-    それ以外は ``pkg.module[:attr]`` とみなす。
+    相対パス・絶対パス・ホーム基準のパスと ``.py`` をファイルとして扱う。
+    Windows のドライブ文字と UNC パスにも対応し、それ以外は ``pkg.module[:attr]`` とみなす。
     """
-    head = value.split(":", 1)[0]
-    return head.startswith(("./", "../", "/", "~")) or head.endswith(".py")
+    head, _ = split_reference(value)
+    return (
+        bool(ntpath.splitdrive(head)[0])
+        or head.startswith(("./", "../", "/", "~", ".\\", "..\\", "\\"))
+        or head.endswith(".py")
+    )
 
 
 def _resolve_path_reference(value: str, base_dir: Path) -> str:
     """``path[:attr]`` のパス部分を ``base_dir`` 基準の絶対パスにする。``:attr`` はそのまま残す。"""
-    path_part, sep, attr = value.partition(":")
+    path_part, attr = split_reference(value)
     resolved = (base_dir / Path(path_part).expanduser()).resolve()
-    return f"{resolved}{sep}{attr}"
+    return str(resolved) if attr is None else f"{resolved}:{attr}"
 
 
 @dataclass(frozen=True)
@@ -174,7 +189,7 @@ def load_agent(directory: Path) -> ResolvedAgent:
     # ツール文字列は Strands のローダーにそのまま渡すので、相対パスだけを絶対化しておく。
     tools = [_resolve_path_reference(t, directory) if is_path_reference(t) else t for t in definition.tools]
     for tool in tools:
-        if is_path_reference(tool) and not Path(tool.split(":", 1)[0]).exists():
+        if is_path_reference(tool) and not Path(split_reference(tool)[0]).exists():
             raise DefinitionError(f"tool file not found: {tool}", source=str(agent_file))
 
     # skills 未指定なら ``./skills`` があれば使う。URL（SKILL.md の生 URL）はそのまま通す。

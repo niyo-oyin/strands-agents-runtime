@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -275,8 +276,8 @@ async def test_job_journal_on_s3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         "AWS_ACCESS_KEY_ID": "testing",
         "AWS_SECRET_ACCESS_KEY": "testing",
         "AWS_DEFAULT_REGION": "us-east-1",
-        "AWS_CONFIG_FILE": "/dev/null",
-        "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+        "AWS_CONFIG_FILE": os.devnull,
+        "AWS_SHARED_CREDENTIALS_FILE": os.devnull,
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("AWS_PROFILE", raising=False)

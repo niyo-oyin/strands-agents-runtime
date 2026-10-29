@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import threading
 import uuid
 from collections.abc import AsyncIterator
@@ -86,7 +87,7 @@ class JobManager:
         self._max_duration = max_duration_seconds
         self.busy_tracker = busy_tracker
         self._running: dict[str, _RunningJob] = {}
-        self._owner = f"{os.uname().nodename}:{os.getpid()}"
+        self._owner = f"{socket.gethostname()}:{os.getpid()}"
 
     @property
     def enabled(self) -> bool:

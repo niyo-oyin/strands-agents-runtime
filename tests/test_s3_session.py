@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 
@@ -24,8 +25,8 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
-    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
+    monkeypatch.setenv("AWS_CONFIG_FILE", os.devnull)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", os.devnull)
 
 
 async def test_history_round_trips_through_s3(tmp_path: Path, aws_env: None) -> None:

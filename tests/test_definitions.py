@@ -6,8 +6,50 @@ from pathlib import Path
 import pytest
 
 from strands_runtime.definitions import Registry, load_agent, load_runtime_config
+from strands_runtime.definitions.loader import is_path_reference, split_reference
 from strands_runtime.errors import DefinitionError, UnknownAgentError
 from tests.conftest import write_agent, write_runtime
+
+
+@pytest.mark.parametrize(
+    ("reference", "head", "attr", "is_path"),
+    [
+        (r"C:\agents\model.py:factory", r"C:\agents\model.py", "factory", True),
+        ("C:/agents/model.py:factory", "C:/agents/model.py", "factory", True),
+        (r"C:\agents\model.py", r"C:\agents\model.py", None, True),
+        (r"C:tools\echo.py:echo", r"C:tools\echo.py", "echo", True),
+        (r"\\server\share\model.py:factory", r"\\server\share\model.py", "factory", True),
+        (r"\\?\C:\agents\model.py:factory", r"\\?\C:\agents\model.py", "factory", True),
+        (r".\model.py:factory", r".\model.py", "factory", True),
+        ("/agents/model.py:factory", "/agents/model.py", "factory", True),
+        ("./model.py", "./model.py", None, True),
+        ("pkg.model:factory", "pkg.model", "factory", False),
+        ("x:factory", "x", "factory", False),
+        ("pkg.tools", "pkg.tools", None, False),
+    ],
+)
+def test_reference_syntax_preserves_drive_letters(reference, head, attr, is_path):
+    assert split_reference(reference) == (head, attr)
+    assert is_path_reference(reference) is is_path
+
+
+def test_absolute_tool_path_in_toml(tmp_path):
+    tool_path = tmp_path / "共有 tools" / "echo.py"
+    tool_path.parent.mkdir()
+    from tests.conftest import ECHO_TOOL
+
+    tool_path.write_text(ECHO_TOOL, encoding="utf-8")
+    directory = write_agent(tmp_path / "agents", "alpha", with_tool=False, toml_extra=f"tools = ['{tool_path}']\n")
+    resolved = load_agent(directory)
+    assert resolved.tools == [str(tool_path)]
+
+    from strands_runtime.factory import SessionContext
+    from strands_runtime.runtime import Runtime
+
+    runtime = Runtime.load(write_runtime(tmp_path))
+    assert (
+        "echo" in runtime.factory.build("alpha", SessionContext(session_id="absolute-path", actor_id="test")).tool_names
+    )
 
 
 def test_load_agent_resolves_prompt_tools_skills_and_mcp(tmp_path: Path) -> None:

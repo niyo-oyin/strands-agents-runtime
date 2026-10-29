@@ -16,6 +16,7 @@ dependencies = [
     "pydantic>=2.5,<3",
     "httpx>=0.27",
     "boto3>=1.40",
+    "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +61,7 @@ packages = ["src/strands_runtime"]
 [tool.ruff]
 line-length = 120
 target-version = "py313"
-src = ["src", "tests", "tests_integ", "infra"]
+src = ["src", "tests", "tests_integ", "infra", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN"]
@@ -69,7 +70,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN"]
 ignore = ["ANN401", "RUF001", "RUF002", "RUF003", "E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["strands_runtime", "tests", "infra"]
+known-first-party = ["strands_runtime", "tests", "infra", "scripts"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
@@ -78,7 +79,7 @@ known-first-party = ["strands_runtime", "tests", "infra"]
 [tool.mypy]
 python_version = "3.13"
 strict = true
-packages = ["strands_runtime", "infra"]
+packages = ["strands_runtime", "infra", "scripts"]
 mypy_path = "src"
 warn_unreachable = true
 
