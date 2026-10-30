@@ -20,7 +20,9 @@ from typing import Any, Protocol
 from opentelemetry import trace
 
 from strands_runtime.errors import JobsDisabledError, UnknownJobError
-from strands_runtime.events import (
+from strands_runtime.invoke.invoker import CANCEL_DRAIN_SECONDS, InvocationRequest, Invoker
+from strands_runtime.jobs.journal import JobJournal, JobRecord, seconds_since, utcnow
+from strands_runtime_client.events import (
     CancelledBy,
     ErrorEvent,
     HandoffEvent,
@@ -36,8 +38,6 @@ from strands_runtime.events import (
     ToolResultEvent,
     ToolUseEvent,
 )
-from strands_runtime.invoke.invoker import CANCEL_DRAIN_SECONDS, InvocationRequest, Invoker
-from strands_runtime.jobs.journal import JobJournal, JobRecord, seconds_since, utcnow
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from strands_runtime.errors import SessionBusyError, UnknownAgentError
-from strands_runtime.events import (
+from strands_runtime.factory import SessionContext
+from strands_runtime.invoke import InvocationRequest
+from strands_runtime.invoke.invoker import _Run, decode_prompt
+from strands_runtime.runtime import Runtime
+from strands_runtime_client.events import (
     ErrorEvent,
     InterruptEvent,
     ReasoningEvent,
@@ -16,10 +20,6 @@ from strands_runtime.events import (
     ToolResultEvent,
     ToolUseEvent,
 )
-from strands_runtime.factory import SessionContext
-from strands_runtime.invoke import InvocationRequest
-from strands_runtime.invoke.invoker import _Run, decode_prompt
-from strands_runtime.runtime import Runtime
 from tests import fakes
 from tests.conftest import write_agent, write_runtime
 

@@ -18,10 +18,10 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
 from strands_runtime.errors import JobsDisabledError, SessionBusyError, UnknownAgentError, UnknownJobError
-from strands_runtime.events import ErrorEvent, dump_event
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.logging_setup import configure_logging
 from strands_runtime.runtime import Runtime
+from strands_runtime_client.events import ErrorEvent, dump_event
 
 logger = logging.getLogger(__name__)
 

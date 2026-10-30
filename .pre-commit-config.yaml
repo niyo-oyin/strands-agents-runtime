@@ -4,13 +4,13 @@ repos:
     hooks:
       - id: ruff-format
         name: ruff format --check
-        entry: uv run ruff format --check src tests tests_integ infra scripts
+        entry: uv run ruff format --check src packages/client tests tests_integ infra scripts
         language: system
         pass_filenames: false
         types: [python]
       - id: ruff
         name: ruff check
-        entry: uv run ruff check src tests tests_integ infra scripts
+        entry: uv run ruff check src packages/client tests tests_integ infra scripts
         language: system
         pass_filenames: false
         types: [python]

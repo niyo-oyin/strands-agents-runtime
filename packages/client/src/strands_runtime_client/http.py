@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
+from strands_runtime_client.base import AgentClient, InvocationError, iter_sse_events
+from strands_runtime_client.events import parse_event
 
-from strands_runtime.client.base import AgentClient, InvocationError, iter_sse_events
-from strands_runtime.events import parse_event
+if TYPE_CHECKING:
+    import httpx
 
 # AgentCore がセッションの識別に使うヘッダー。他の基盤では任意で、ペイロードの session_id と同じ値を入れる。
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
@@ -23,7 +24,14 @@ class HttpClient(AgentClient):
         headers: dict[str, str] | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        """``transport`` はテストや組み込み用途で、``httpx.ASGITransport(app)`` などを差し込むためのもの。"""
+        """``transport`` には ``httpx.MockTransport`` などの同期トランスポートを指定できる。"""
+        try:
+            import httpx
+        except ModuleNotFoundError as exc:
+            if exc.name != "httpx":
+                raise
+            raise ImportError("HttpClient requires strands-agents-runtime-client[http]") from exc
+
         self._client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers, transport=transport)
 
     def close(self) -> None:

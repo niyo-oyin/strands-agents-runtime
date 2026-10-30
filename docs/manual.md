@@ -118,10 +118,14 @@ uv run --env-file .env strands-runtime serve --port 8080
 `GET /ping` で稼働確認、`POST /invocations` で実行できます。
 ここではポートを明示しています。省略すると設定ファイルの値を使い、付属のルート設定は `18080`、feature-check は `18081` です。
 
+Python クライアントだけを使う場合は、呼び出し側の仮想環境へ `uv pip install "./packages/client[http]"` で導入できます（リポジトリのルートで実行）。
+AgentCore 用は `[agentcore]` を選びます。ランタイム・Strands SDK・CDK は不要です。
+wheel での配布手順と詳しい使い方は [クライアントのREADME](../packages/client/README.md) を参照してください。
+
 Python クライアントの例:
 
 ```python
-from strands_runtime.client import HttpClient, new_session_id
+from strands_runtime_client import HttpClient, new_session_id
 
 client = HttpClient("http://127.0.0.1:8080")
 sid = new_session_id()
@@ -151,6 +155,7 @@ uv run python scripts/dev.py docker-run
 
 ```text
 uv run python scripts/dev.py check       # lint・型検査・単体テスト・定義と MCP の検証
+uv run python scripts/dev.py client-check # クライアント wheel の独立インストール検証（check にも含まれる）
 uv run python scripts/dev.py integ       # .env のキーで実モデルを呼ぶ結合テスト
 uv run python scripts/dev.py synth       # AWS アカウントなしで CDK テンプレートを生成
 ```

@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from typing import Any
 
-from strands_runtime.events import ErrorEvent, JobEvent, ResultEvent, parse_event
+from strands_runtime_client.events import ErrorEvent, JobEvent, ResultEvent, parse_event
 
 
 class InvocationError(Exception):

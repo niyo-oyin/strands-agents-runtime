@@ -10,11 +10,11 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
+    "strands-agents-runtime-client==0.1.0",
     "strands-agents[otel]>=1.61,<2",
     "strands-harness>=0.3.1,<0.4",
     "bedrock-agentcore[strands-agents]>=1.24,<2",
     "pydantic>=2.5,<3",
-    "httpx>=0.27",
     "boto3>=1.40",
     "tzdata>=2025.2; sys_platform == 'win32'",
 ]
@@ -34,6 +34,7 @@ strands-runtime = "strands_runtime.cli:main"
 
 [dependency-groups]
 dev = [
+    "strands-agents-runtime-client[http,agentcore]==0.1.0",
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<2",
     "ruff>=0.14",
@@ -51,6 +52,12 @@ infra = [
 [tool.uv]
 default-groups = ["dev", "infra"]
 
+[tool.uv.workspace]
+members = ["packages/client"]
+
+[tool.uv.sources]
+strands-agents-runtime-client = { workspace = true }
+
 [[tool.uv.index]]
 url = "https://pypi.flatt.tech/simple/"
 default = true
@@ -61,7 +68,10 @@ packages = ["src/strands_runtime"]
 [tool.ruff]
 line-length = 120
 target-version = "py313"
-src = ["src", "tests", "tests_integ", "infra", "scripts"]
+src = ["src", "packages/client/src", "tests", "tests_integ", "infra", "scripts"]
+
+[tool.ruff.per-file-target-version]
+"packages/client/**/*.py" = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN"]
@@ -70,17 +80,18 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN"]
 ignore = ["ANN401", "RUF001", "RUF002", "RUF003", "E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["strands_runtime", "tests", "infra", "scripts"]
+known-first-party = ["strands_runtime", "strands_runtime_client", "tests", "infra", "scripts"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
 "tests_integ/**" = ["ANN"]
+"packages/client/tests/**" = ["ANN"]
 
 [tool.mypy]
 python_version = "3.13"
 strict = true
-packages = ["strands_runtime", "infra", "scripts"]
-mypy_path = "src"
+packages = ["strands_runtime", "strands_runtime_client", "infra", "scripts"]
+mypy_path = ["src", "packages/client/src"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
@@ -88,6 +99,6 @@ module = ["strands_harness.*", "bedrock_agentcore.*", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/client/tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

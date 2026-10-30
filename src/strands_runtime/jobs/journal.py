@@ -18,7 +18,7 @@ from typing import Any
 
 from strands.storage import Storage
 
-from strands_runtime.events import JobEvent, dump_event, parse_event
+from strands_runtime_client.events import JobEvent, dump_event, parse_event
 
 logger = logging.getLogger(__name__)
 

@@ -10,9 +10,9 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from strands_runtime.events import ResultEvent
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.runtime import Runtime
+from strands_runtime_client.events import ResultEvent
 from tests import fakes
 from tests.conftest import write_agent, write_runtime
 

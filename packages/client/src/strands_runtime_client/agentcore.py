@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import boto3
+from strands_runtime_client.base import AgentClient, InvocationError, iter_sse_events, new_session_id
+from strands_runtime_client.events import parse_event
 
-from strands_runtime.client.base import AgentClient, InvocationError, iter_sse_events, new_session_id
-from strands_runtime.events import parse_event
+if TYPE_CHECKING:
+    import boto3
 
 
 class AgentCoreClient(AgentClient):
@@ -24,6 +25,13 @@ class AgentCoreClient(AgentClient):
         region_name: str | None = None,
         boto_session: boto3.Session | None = None,
     ) -> None:
+        try:
+            import boto3
+        except ModuleNotFoundError as exc:
+            if exc.name != "boto3":
+                raise
+            raise ImportError("AgentCoreClient requires strands-agents-runtime-client[agentcore]") from exc
+
         self._runtime_arn = runtime_arn
         # ``qualifier`` はエンドポイント名。既定の DEFAULT は常に最新バージョンを指す。
         self._qualifier = qualifier

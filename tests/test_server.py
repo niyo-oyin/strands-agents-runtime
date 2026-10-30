@@ -6,10 +6,10 @@ from collections.abc import Iterator
 import pytest
 from starlette.testclient import TestClient
 
-from strands_runtime.client.base import iter_sse_events
-from strands_runtime.events import ResultEvent, StartEvent
 from strands_runtime.runtime import Runtime
 from strands_runtime.server import create_app
+from strands_runtime_client.base import iter_sse_events
+from strands_runtime_client.events import ResultEvent, StartEvent
 from tests import fakes
 
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"

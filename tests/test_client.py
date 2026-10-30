@@ -8,11 +8,11 @@ from collections.abc import Iterator
 import pytest
 import uvicorn
 
-from strands_runtime.client import HttpClient, InvocationError, new_session_id
-from strands_runtime.client.base import iter_sse_events
-from strands_runtime.events import ResultEvent, TextEvent
 from strands_runtime.runtime import Runtime
 from strands_runtime.server import create_app
+from strands_runtime_client import HttpClient, InvocationError, new_session_id
+from strands_runtime_client.base import iter_sse_events
+from strands_runtime_client.events import ResultEvent, TextEvent
 from tests import fakes
 
 

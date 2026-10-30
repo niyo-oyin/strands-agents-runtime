@@ -15,7 +15,8 @@ WORKDIR /app
 # Dependencies first so they are cached independently of agent definitions.
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev $(for e in $EXTRAS; do printf -- '--extra %s ' "$e"; done)
+COPY packages/client ./packages/client
+RUN uv sync --frozen --no-default-groups $(for e in $EXTRAS; do printf -- '--extra %s ' "$e"; done)
 
 # Agent definitions are part of the artifact; environment-specific values come from env vars.
 COPY runtime.toml ./

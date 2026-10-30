@@ -19,8 +19,7 @@ src/strands_runtime/
   factory/              # 定義 → strands.Agent
   invoke/               # 実行とイベント正規化
   server/               # HTTP サーバー（POST /invocations, GET /ping。AgentCore 互換の汎用契約）
-  client/               # HttpClient / AgentCoreClient
-  events.py             # サーバーとクライアントで共有するイベントスキーマ
+packages/client/        # 独立配布の軽量クライアント（strands_runtime_client）と共有イベント型
 ```
 
 ## 開発（ローカル CI）
@@ -87,10 +86,25 @@ curl -N -X POST localhost:8080/invocations \
   -d '{"agent": "assistant", "prompt": "こんにちは", "session_id": "0f1e2d3c-0000-4000-8000-000000000001"}'
 ```
 
-Python クライアント:
+Python クライアントは [packages/client](packages/client) で独立配布できます。
+呼び出し側にランタイムや Strands SDK を入れる必要はありません。
+Python 3.10 以上で利用でき、HTTP 用は `pydantic` と `httpx`、AgentCore 用は `pydantic` と `boto3` が依存です。
+
+リポジトリを取得して、呼び出し側の仮想環境にインストールします（ランタイム開発環境用の `uv sync` は不要）。
+
+```text
+uv venv
+uv pip install "./packages/client[http]"
+# AgentCore 用: uv pip install "./packages/client[agentcore]"
+```
+
+配布用 wheel の作成と使い方は [クライアントのREADME](packages/client/README.md) を参照してください。
+import 先は `strands_runtime_client`、イベント型は `strands_runtime_client.events` です。
+
+Python クライアントの例:
 
 ```python
-from strands_runtime.client import HttpClient, AgentCoreClient, new_session_id
+from strands_runtime_client import HttpClient, AgentCoreClient, new_session_id
 
 client = HttpClient("http://127.0.0.1:8080")
 # client = AgentCoreClient(runtime_arn="arn:aws:bedrock-agentcore:...:runtime/...")

@@ -13,11 +13,11 @@ from pathlib import Path
 from strands_runtime.definitions.loader import ResolvedAgent, is_path_reference
 from strands_runtime.definitions.schema import BUILTIN_INJECTORS, AgentDefinition, GraphDefinition
 from strands_runtime.errors import StrandsRuntimeError
-from strands_runtime.events import ErrorEvent, ResultEvent, TextEvent
 from strands_runtime.factory.references import load_attribute
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.logging_setup import configure_logging
 from strands_runtime.runtime import Runtime
+from strands_runtime_client.events import ErrorEvent, ResultEvent, TextEvent
 
 
 def build_parser() -> argparse.ArgumentParser:

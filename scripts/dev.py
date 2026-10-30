@@ -17,6 +17,7 @@ TASKS = (
     "lint",
     "typecheck",
     "test",
+    "client-check",
     "validate",
     "integ",
     "docker-build",
@@ -52,15 +53,17 @@ def stop_phoenix() -> None:
 def execute(task: str, *, config: str, image: str) -> None:
     match task:
         case "check":
-            for step in ("lint", "typecheck", "test", "validate"):
+            for step in ("lint", "typecheck", "test", "client-check", "validate"):
                 execute(step, config=config, image=image)
         case "lint":
-            python("ruff", "format", "--check", "src", "tests", "tests_integ", "infra", "scripts")
-            python("ruff", "check", "src", "tests", "tests_integ", "infra", "scripts")
+            python("ruff", "format", "--check", "src", "packages/client", "tests", "tests_integ", "infra", "scripts")
+            python("ruff", "check", "src", "packages/client", "tests", "tests_integ", "infra", "scripts")
         case "typecheck":
             python("mypy")
         case "test":
             python("pytest", "-q")
+        case "client-check":
+            python("scripts.check_client_package")
         case "validate":
             env = dict(os.environ)
             if not env.get("OPENROUTER_API_KEY"):

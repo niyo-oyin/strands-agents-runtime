@@ -77,7 +77,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │ クライアント                                                        │
 │   ローカルプログラム / Lambda / 他エージェント                       │
-│   strands_runtime.client.{HttpClient, AgentCoreClient}              │
+│   strands_runtime_client.{HttpClient, AgentCoreClient}              │
 └───────────────┬─────────────────────────────────────────────────────┘
                 │ JSON ペイロード（agent, prompt, session_id, ...）
                 ▼
@@ -110,6 +110,7 @@
 | 配布名 | Python パッケージ | CLI | 備考 |
 |---|---|---|---|
 | `strands-agents-runtime` | `strands_runtime` | `strands-runtime` | 名称は [§14](#14-未決事項) で確認 |
+| `strands-agents-runtime-client` | `strands_runtime_client` | なし | 必須依存は pydantic。http / agentcore extras でトランスポートを追加 |
 
 ```
 strands_runtime/
@@ -124,15 +125,16 @@ strands_runtime/
     sessions.py     # session.backend → SessionManager
   invoke/
     invoker.py      # 1 リクエストの実行とイベント正規化
-    events.py       # ランタイムイベントスキーマ（pydantic）
   server/
     app.py          # BedrockAgentCoreApp の組み立て、/invocations エントリポイント
     __main__.py     # python -m strands_runtime.server
-  client/
-    http.py         # ローカル / Docker 向け HTTP クライアント
-    agentcore.py    # boto3 invoke_agent_runtime ラッパー
-    events.py       # SSE パーサー（client と server で共有するイベント型を再利用）
   cli.py            # validate / list / run / serve
+
+packages/client/src/strands_runtime_client/
+  base.py           # クライアント共通インターフェース、SSE パーサー、ジョブ操作
+  http.py           # ローカル / Docker 向け HTTP クライアント
+  agentcore.py      # boto3 invoke_agent_runtime ラッパー
+  events.py         # サーバー・クライアント共通のイベント型（pydantic）
 ```
 
 ### 3.3 実行時のデータフロー
@@ -1015,10 +1017,12 @@ CDK スタックは Runtime の一覧（名前、読む `runtime.toml`、環境�
 
 ## 12. クライアント
 
-Python パッケージ `strands_runtime.client` を提供し、Lambda などから利用する。
+独立配布の `strands-agents-runtime-client`（import 名 `strands_runtime_client`）を提供し、Lambda などから利用する。
+ソースは `packages/client` に置き、ランタイムと uv workspace のロックファイルを共有する。
+イベント型は `strands_runtime_client.events` に置き、サーバーもこのパッケージに依存する。Python 3.10 以上で動作する。
 
 ```python
-from strands_runtime.client import AgentCoreClient, HttpClient
+from strands_runtime_client import AgentCoreClient, HttpClient
 
 client = AgentCoreClient(runtime_arn=os.environ["AGENT_RUNTIME_ARN"])   # boto3 bedrock-agentcore
 # client = HttpClient("http://localhost:8080")                           # ローカル / Docker
@@ -1045,7 +1049,9 @@ job.cancel()                                                             # mode=
 - 2 つのクライアントは同じインターフェース（`stream()` / `invoke()` / `submit()`）と同じイベント型を持つ。
 - `AgentCoreClient` は `invoke_agent_runtime(agentRuntimeArn, runtimeSessionId, payload, qualifier="DEFAULT")` を呼び、`text/event-stream` なら `iter_lines()` で `data:` 行を解析する。`424 RuntimeClientError` や `409 RetryableConflictException` は型付き例外にする（後者は boto3 がリトライする）。
 - `qualifier` でエンドポイント（バージョン固定）を選べるようにする。
-- クライアントは依存を最小にする（`boto3` と `pydantic` のみ）。Lambda でのパッケージサイズを抑えるため、extras `strands-agents-runtime[client]` を用意するか、別配布にするかは [§14](#14-未決事項) で確認する。
+- 必須依存は `pydantic` のみ。HTTP 用の `[http]` は `httpx`、AgentCore 用の `[agentcore]` は `boto3` を追加する。
+  各トランスポートの依存はクライアント生成時に読み込むため、片方だけのインストールでも公開 API を import できる。
+  `uv run python scripts/dev.py client-check` で wheel を core / http / agentcore の独立環境に導入し、重い依存がないことと基本動作を確認する。
 
 ---
 

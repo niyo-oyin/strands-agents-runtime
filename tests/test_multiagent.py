@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 
 from strands_runtime.errors import DefinitionError
-from strands_runtime.events import (
+from strands_runtime.invoke import InvocationRequest
+from strands_runtime.runtime import Runtime
+from strands_runtime_client.events import (
     ErrorEvent,
     HandoffEvent,
     NodeStartEvent,
@@ -19,8 +21,6 @@ from strands_runtime.events import (
     TextEvent,
     ToolUseEvent,
 )
-from strands_runtime.invoke import InvocationRequest
-from strands_runtime.runtime import Runtime
 from tests import fakes
 from tests.conftest import write_agent, write_runtime
 

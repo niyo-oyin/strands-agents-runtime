@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from strands_runtime.events import (
+from strands_runtime.invoke import InvocationRequest
+from strands_runtime.runtime import Runtime
+from strands_runtime_client.events import (
     HandoffEvent,
     NodeStartEvent,
     NodeStopEvent,
@@ -18,8 +20,6 @@ from strands_runtime.events import (
     ToolResultEvent,
     ToolUseEvent,
 )
-from strands_runtime.invoke import InvocationRequest
-from strands_runtime.runtime import Runtime
 
 pytestmark = pytest.mark.skipif(not os.environ.get("OPENROUTER_API_KEY"), reason="OPENROUTER_API_KEY is not set")
 

@@ -25,7 +25,10 @@ from strands.types.agent import AgentInput, Limits
 from strands_runtime.definitions.registry import Registry
 from strands_runtime.definitions.schema import AgentDefinition, GraphDefinition, RuntimeConfig, SwarmDefinition
 from strands_runtime.errors import SessionBusyError, StrandsRuntimeError, UnknownAgentError
-from strands_runtime.events import (
+from strands_runtime.factory import AgentFactory, SessionContext
+from strands_runtime.factory.sessions import ANONYMOUS_ACTOR, effective_session_spec
+from strands_runtime.invoke.usage import UsageCollector
+from strands_runtime_client.events import (
     AgentUsageEvent,
     ErrorEvent,
     HandoffEvent,
@@ -42,9 +45,6 @@ from strands_runtime.events import (
     ToolResultEvent,
     ToolUseEvent,
 )
-from strands_runtime.factory import AgentFactory, SessionContext
-from strands_runtime.factory.sessions import ANONYMOUS_ACTOR, effective_session_spec
-from strands_runtime.invoke.usage import UsageCollector
 
 logger = logging.getLogger(__name__)
 

@@ -7,6 +7,12 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
+[manifest]
+members = [
+    "strands-agents-runtime",
+    "strands-agents-runtime-client",
+]
+
 [[package]]
 name = "a2a-sdk"
 version = "0.3.26"
@@ -3936,9 +3942,9 @@ source = { editable = "." }
 dependencies = [
     { name = "bedrock-agentcore", extra = ["strands-agents"] },
     { name = "boto3" },
-    { name = "httpx" },
     { name = "pydantic" },
     { name = "strands-agents", extra = ["otel"] },
+    { name = "strands-agents-runtime-client" },
     { name = "strands-harness" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
@@ -3978,6 +3984,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "strands-agents", extra = ["cedar", "openai"] },
+    { name = "strands-agents-runtime-client", extra = ["agentcore", "http"] },
     { name = "types-boto3" },
 ]
 infra = [
@@ -3990,7 +3997,6 @@ requires-dist = [
     { name = "aws-opentelemetry-distro", marker = "extra == 'agentcore-otel'", specifier = ">=0.18,<1" },
     { name = "bedrock-agentcore", extras = ["strands-agents"], specifier = ">=1.24,<2" },
     { name = "boto3", specifier = ">=1.40" },
-    { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.5,<3" },
     { name = "strands-agents", extras = ["a2a"], marker = "extra == 'a2a'" },
     { name = "strands-agents", extras = ["anthropic"], marker = "extra == 'anthropic'" },
@@ -4000,6 +4006,7 @@ requires-dist = [
     { name = "strands-agents", extras = ["ollama"], marker = "extra == 'ollama'" },
     { name = "strands-agents", extras = ["openai"], marker = "extra == 'openai'" },
     { name = "strands-agents", extras = ["otel"], specifier = ">=1.61,<2" },
+    { name = "strands-agents-runtime-client", editable = "packages/client" },
     { name = "strands-harness", specifier = ">=0.3.1,<0.4" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2025.2" },
 ]
@@ -4014,12 +4021,37 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.24,<2" },
     { name = "ruff", specifier = ">=0.14" },
     { name = "strands-agents", extras = ["cedar", "openai"], specifier = ">=1.61.1" },
+    { name = "strands-agents-runtime-client", extras = ["http", "agentcore"], editable = "packages/client" },
     { name = "types-boto3", specifier = ">=1.40" },
 ]
 infra = [
     { name = "aws-cdk-lib", specifier = ">=2.255" },
     { name = "constructs", specifier = ">=10" },
 ]
+
+[[package]]
+name = "strands-agents-runtime-client"
+version = "0.1.0"
+source = { editable = "packages/client" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+agentcore = [
+    { name = "boto3" },
+]
+http = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", marker = "extra == 'agentcore'", specifier = ">=1.40" },
+    { name = "httpx", marker = "extra == 'http'", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.5,<3" },
+]
+provides-extras = ["http", "agentcore"]
 
 [[package]]
 name = "strands-harness"

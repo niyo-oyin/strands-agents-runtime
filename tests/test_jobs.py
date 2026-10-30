@@ -13,11 +13,11 @@ import pytest
 from moto import mock_aws
 
 from strands_runtime.errors import JobsDisabledError, SessionBusyError, UnknownJobError
-from strands_runtime.events import ErrorEvent, JobEvent, ResultEvent, TextEvent, ToolResultEvent, ToolUseEvent
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.jobs import JobJournal, JobRecord
 from strands_runtime.jobs import manager as manager_module
 from strands_runtime.runtime import Runtime
+from strands_runtime_client.events import ErrorEvent, JobEvent, ResultEvent, TextEvent, ToolResultEvent, ToolUseEvent
 from tests import fakes
 from tests.conftest import write_agent, write_runtime
 

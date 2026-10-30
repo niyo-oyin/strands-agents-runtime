@@ -11,10 +11,10 @@ from strands.models.openai_responses import OpenAIResponsesModel
 
 from strands_runtime.definitions.schema import ModelDefaults, ModelSpec
 from strands_runtime.errors import DefinitionError
-from strands_runtime.events import ResultEvent, TextEvent
 from strands_runtime.factory.models import build_model
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.runtime import Runtime
+from strands_runtime_client.events import ResultEvent, TextEvent
 from tests.conftest import write_agent, write_runtime
 
 
