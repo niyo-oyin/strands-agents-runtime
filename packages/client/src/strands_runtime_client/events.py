@@ -94,7 +94,7 @@ class InterruptInfo(_Event):
 
 
 class InterruptEvent(_StreamEvent):
-    """ツールが人の判断を求めて中断した。``prompt`` に ``interruptResponse`` を入れて再開する。"""
+    """ツールが人の判断を求めて中断した。userメッセージのcontentに ``interruptResponse`` を入れて再開する。"""
 
     type: Literal["interrupt"] = "interrupt"
     interrupts: list[InterruptInfo]
@@ -214,6 +214,7 @@ class JobEvent(_StreamEvent):
     """ジョブの記録。``mode`` が ``job`` / ``status`` / ``cancel`` の応答と、``result`` の未完了時に返る。"""
 
     type: Literal["job"] = "job"
+    actor_id: str
     job_id: str
     session_id: str
     agent: str

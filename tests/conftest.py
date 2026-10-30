@@ -55,6 +55,8 @@ def write_runtime(base_dir: Path, body: str = "") -> Path:
         body += '\n[session]\nbackend = "local"'
         if "[session.history]" not in body:
             body += '\n[session.history]\nbackend = "local"'
+    if "default_actor_id" not in body:
+        body = body.replace("[session]", '[session]\ndefault_actor_id = "test-user"')
     path = base_dir / "runtime.toml"
     path.write_text(
         textwrap.dedent(

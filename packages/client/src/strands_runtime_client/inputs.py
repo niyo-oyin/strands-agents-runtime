@@ -73,9 +73,10 @@ class InvocationInput(GenerationOptions):
 
     model_config = ConfigDict(extra="forbid")
 
-    prompt: str | list[dict[str, Any]] | None = Field(default=None, min_length=1)
     messages: list[Message] | None = Field(default=None, min_length=1)
     session_id: str | None = Field(default=None, min_length=1)
+    actor_id: str | None = Field(default=None, min_length=1, pattern=r"\S")
+    store: bool | None = Field(default=None, strict=True)
     model: str | None = Field(default=None, pattern=r"^\S+/\S+$")
     timeout_seconds: float | None = Field(default=None, gt=0, strict=True, allow_inf_nan=False)
     max_turns: int | None = Field(default=None, gt=0, strict=True)
@@ -83,12 +84,14 @@ class InvocationInput(GenerationOptions):
 
     @model_validator(mode="after")
     def _consistent_input(self) -> InvocationInput:
-        if self.prompt is not None and self.messages is not None:
-            raise ValueError("prompt and messages are mutually exclusive")
         if self.session_id is not None and self.messages is not None and len(self.messages) != 1:
             raise ValueError("messages must contain exactly one message when session_id is specified")
         return self
 
     def require_input(self) -> None:
-        if self.prompt is None and self.messages is None:
-            raise ValueError("exactly one of prompt or messages is required")
+        if self.messages is None:
+            raise ValueError("messages is required")
+
+    @property
+    def should_store(self) -> bool:
+        return self.store if self.store is not None else self.session_id is not None

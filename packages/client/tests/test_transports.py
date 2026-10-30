@@ -20,7 +20,7 @@ def test_http_without_runtime(streaming):
     def respond(request):
         assert request.url.path == "/invocations"
         assert request.headers["X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"] == "s"
-        assert json.loads(request.content)["prompt"] == "hello"
+        assert json.loads(request.content)["messages"] == [{"role": "user", "content": "hello"}]
         if streaming:
             return httpx.Response(
                 200,
@@ -32,7 +32,7 @@ def test_http_without_runtime(streaming):
         return httpx.Response(200, json=RESULT)
 
     with HttpClient("https://runtime.example", transport=httpx.MockTransport(respond)) as client:
-        assert client.invoke("hello", session_id="s") == ResultEvent(**RESULT)
+        assert client.invoke(messages=[{"role": "user", "content": "hello"}], session_id="s") == ResultEvent(**RESULT)
 
 
 @pytest.mark.parametrize(
@@ -48,7 +48,7 @@ def test_http_errors_without_runtime(status, body, match):
         HttpClient("https://runtime.example", transport=transport) as client,
         pytest.raises(InvocationError, match=match),
     ):
-        client.invoke("hello")
+        client.invoke(messages=[{"role": "user", "content": "hello"}])
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -75,10 +75,12 @@ def test_agentcore_without_runtime(streaming):
                 "runtimeSessionId": sid,
                 "contentType": "application/json",
                 "accept": "text/event-stream",
-                "payload": json.dumps({"prompt": "hello", "session_id": sid, "stream": True}).encode("utf-8"),
+                "payload": json.dumps(
+                    {"messages": [{"role": "user", "content": "hello"}], "session_id": sid, "stream": True}
+                ).encode("utf-8"),
             },
         )
-        assert client.invoke("hello", session_id=sid) == ResultEvent(**result)
+        assert client.invoke(messages=[{"role": "user", "content": "hello"}], session_id=sid) == ResultEvent(**result)
         stub.assert_no_pending_responses()
 
 
@@ -98,7 +100,14 @@ def test_agentcore_generated_routing_id_does_not_turn_full_history_into_session_
     result = {**RESULT, "session_id": sid}
     expected = {"messages": history, "model": "openai/deployment", "stream": True}
     if method == "submit":
-        result = {"type": "job", "agent": "assistant", "session_id": sid, "job_id": "j", "state": "running"}
+        result = {
+            "type": "job",
+            "actor_id": "test-user",
+            "agent": "assistant",
+            "session_id": sid,
+            "job_id": "j",
+            "state": "running",
+        }
         result.update(accepted_at="2026-10-30T00:00:00Z", updated_at="2026-10-30T00:00:00Z")
         expected.update(mode="job", tool_result_detail="preview", include_subagents=False)
     response = json.dumps(result).encode()

@@ -11,6 +11,13 @@ class InvalidRequestError(StrandsRuntimeError):
     """入力とエージェント定義の組み合わせが不正。サーバーは実行前に 400 を返す。"""
 
 
+class SessionAccessError(StrandsRuntimeError):
+    """会話またはジョブの所有者が一致しない。HTTP 403。"""
+
+    def __init__(self) -> None:
+        super().__init__("actor_id does not own this session or job")
+
+
 class DefinitionError(StrandsRuntimeError):
     """エージェント定義または runtime.toml が不正。``source`` はファイルパスで、メッセージの先頭に付く。"""
 

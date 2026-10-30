@@ -28,15 +28,21 @@ async def test_http_overload_is_503_before_stream_and_control_requests_still_wor
         app.router.lifespan_context(app),
         httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client,
     ):
-        accepted = await client.post("/invocations", json={"prompt": "go", "mode": "job", "session_id": "busy"})
+        accepted = await client.post(
+            "/invocations", json={"messages": [{"role": "user", "content": "go"}], "mode": "job", "session_id": "busy"}
+        )
         assert accepted.status_code == 200
         try:
             assert await asyncio.to_thread(entered.wait, 2)
-            response = await client.post("/invocations", json={"prompt": "go", "mode": mode, "stream": stream})
+            response = await client.post(
+                "/invocations", json={"messages": [{"role": "user", "content": "go"}], "mode": mode, "stream": stream}
+            )
             assert response.status_code == 503 and response.headers["retry-after"] == "1"
             assert response.headers["content-type"] == "application/json"
             assert "full" in response.json()["error"]
-            duplicate = await client.post("/invocations", json={"prompt": "go", "session_id": "busy"})
+            duplicate = await client.post(
+                "/invocations", json={"messages": [{"role": "user", "content": "go"}], "session_id": "busy"}
+            )
             assert duplicate.status_code == 409
             assert (await client.get("/ping")).status_code == 200
             status = await client.post("/invocations", json={"mode": "status", "session_id": "busy"})
@@ -62,10 +68,12 @@ async def test_http_queue_timeout_returns_503_and_releases_waiting_session(tmp_p
         app.router.lifespan_context(app),
         httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client,
     ):
-        active = asyncio.create_task(client.post("/invocations", json={"prompt": "go", "stream": False}))
+        active = asyncio.create_task(
+            client.post("/invocations", json={"messages": [{"role": "user", "content": "go"}], "stream": False})
+        )
         try:
             assert await asyncio.to_thread(entered.wait, 2)
-            payload = {"prompt": "go", "session_id": "waiting"}
+            payload = {"messages": [{"role": "user", "content": "go"}], "session_id": "waiting"}
             response = await client.post("/invocations", json=payload)
             assert response.status_code == 503 and "timed out" in response.json()["error"]
             release.set()
@@ -93,15 +101,25 @@ async def test_agentcore_requires_matching_routing_id_and_reports_background_wor
         app.router.lifespan_context(app),
         httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client,
     ):
-        assert (await client.post("/invocations", json={"prompt": "go"})).status_code == 400
-        mismatch = await client.post("/invocations", headers=headers, json={"prompt": "go", "session_id": "other"})
+        assert (
+            await client.post("/invocations", json={"messages": [{"role": "user", "content": "go"}]})
+        ).status_code == 400
+        mismatch = await client.post(
+            "/invocations",
+            headers=headers,
+            json={"messages": [{"role": "user", "content": "go"}], "session_id": "other"},
+        )
         assert mismatch.status_code == 400
-        accepted = await client.post("/invocations", headers=headers, json={"prompt": "go", "mode": "job"})
+        accepted = await client.post(
+            "/invocations", headers=headers, json={"messages": [{"role": "user", "content": "go"}], "mode": "job"}
+        )
         assert accepted.status_code == 200
         try:
             assert await asyncio.to_thread(entered.wait, 2)
             assert (await client.get("/ping")).json()["status"] == "HealthyBusy"
-            duplicate = await client.post("/invocations", headers=headers, json={"prompt": "go"})
+            duplicate = await client.post(
+                "/invocations", headers=headers, json={"messages": [{"role": "user", "content": "go"}]}
+            )
             assert duplicate.status_code == 409
             cancelled = await client.post("/invocations", headers=headers, json={"mode": "cancel"})
             assert cancelled.status_code == 200
@@ -140,7 +158,10 @@ async def test_io_pool_bounds_blocking_tools_without_serializing_async_requests(
         httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client,
     ):
         tasks = [
-            asyncio.create_task(client.post("/invocations", json={"prompt": "go", "stream": False})) for _ in range(4)
+            asyncio.create_task(
+                client.post("/invocations", json={"messages": [{"role": "user", "content": "go"}], "stream": False})
+            )
+            for _ in range(4)
         ]
         try:
             assert await asyncio.to_thread(entered.wait, 2)
@@ -160,7 +181,10 @@ def test_server_shutdown_cancels_job_on_its_own_loop(runtime):
     fakes.set_chunk_delay(0.01)
     try:
         with TestClient(create_app(runtime)) as client:
-            accepted = client.post("/invocations", json={"mode": "job", "prompt": "go", "session_id": "shutdown"})
+            accepted = client.post(
+                "/invocations",
+                json={"mode": "job", "messages": [{"role": "user", "content": "go"}], "session_id": "shutdown"},
+            )
             assert accepted.status_code == 200
         # 別イベントループの HTTP lifespan から、実行ループのジョブを停止して保存できる。
         event = asyncio.run(runtime.jobs.status("shutdown"))
@@ -226,7 +250,10 @@ async def test_burst_of_48_requests_obeys_execution_limit(tmp_path, monkeypatch,
     ):
         responses = await asyncio.gather(
             *(
-                client.post("/invocations", json={"prompt": "go", "session_id": f"s-{index}", "stream": False})
+                client.post(
+                    "/invocations",
+                    json={"messages": [{"role": "user", "content": "go"}], "session_id": f"s-{index}", "stream": False},
+                )
                 for index in range(48)
             )
         )

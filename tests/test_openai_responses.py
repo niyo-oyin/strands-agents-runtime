@@ -60,7 +60,7 @@ context_window_limit = 32000
     else:
         result = await runtime.invoker.invoke(request)
     assert isinstance(result, ResultEvent) and result.text == "こんにちは"
-    await runtime.invoker.invoke(InvocationRequest(prompt="again"))
+    await runtime.invoker.invoke(InvocationRequest(messages=[{"role": "user", "content": "again"}]))
     selected, default = mock_responses
     assert json.loads(selected.content)["model"] == "selected-deployment"
     assert json.loads(default.content)["model"] == "default-deployment"
@@ -169,7 +169,12 @@ context_window_limit = 32000
     )
     runtime = Runtime.load(write_runtime(tmp_path))
     for agent in ("azure", "official"):
-        events = [event async for event in runtime.invoker.stream(InvocationRequest(agent=agent, prompt="hello"))]
+        events = [
+            event
+            async for event in runtime.invoker.stream(
+                InvocationRequest(agent=agent, messages=[{"role": "user", "content": "hello"}])
+            )
+        ]
         assert any(isinstance(event, TextEvent) and event.text == "こんにちは" for event in events)
         assert isinstance(events[-1], ResultEvent) and events[-1].text == "こんにちは"
         assert events[-1].metrics.total_tokens == 5

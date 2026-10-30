@@ -75,7 +75,7 @@ async def test_graph_accepts_single_user_message(tmp_path):
 @pytest.mark.parametrize(
     "options,match",
     [
-        ({"prompt": "hi", "model": "openai/deployment"}, "model override"),
+        ({"messages": [{"role": "user", "content": "hi"}], "model": "openai/deployment"}, "model override"),
         ({"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}, "single user"),
         ({"messages": [{"role": "assistant", "content": "a"}]}, "single user"),
     ],
@@ -91,7 +91,9 @@ async def test_graph_runs_nodes_in_order_and_reports_node_events(tmp_path: Path)
     runtime = pipeline(tmp_path)
     fakes.script(fakes.text("the plan"), fakes.text("the draft"))
 
-    events = await collect(runtime, InvocationRequest(prompt="write something", session_id="g-1"))
+    events = await collect(
+        runtime, InvocationRequest(messages=[{"role": "user", "content": "write something"}], session_id="g-1")
+    )
 
     starts = [e for e in events if isinstance(e, NodeStartEvent)]
     stops = [e for e in events if isinstance(e, NodeStopEvent)]
@@ -113,7 +115,9 @@ async def test_graph_runs_nodes_in_order_and_reports_node_events(tmp_path: Path)
     assert result.metrics.total_tokens == 30 and set(result.metrics.agents) == {"planner", "writer"}
     # 2 回目の呼び出しは最初から実行し直す（会話は持ち越さない）。
     fakes.script(fakes.text("plan 2"), fakes.text("draft 2"))
-    second = await runtime.invoker.invoke(InvocationRequest(prompt="again", session_id="g-1"))
+    second = await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "again"}], session_id="g-1")
+    )
     assert isinstance(second, ResultEvent) and second.text == "draft 2"
     assert len(fakes.seen_messages()[0]) == 1  # 前回の会話は含まれない
 
@@ -121,7 +125,7 @@ async def test_graph_runs_nodes_in_order_and_reports_node_events(tmp_path: Path)
 async def test_graph_output_node_selects_the_text(tmp_path: Path) -> None:
     runtime = pipeline(tmp_path, extra='output = "planner"')
     fakes.script(fakes.text("the plan"), fakes.text("the draft"))
-    result = await runtime.invoker.invoke(InvocationRequest(prompt="go"))
+    result = await runtime.invoker.invoke(InvocationRequest(messages=[{"role": "user", "content": "go"}]))
     assert isinstance(result, ResultEvent) and result.text == "the plan"
 
 
@@ -163,7 +167,7 @@ async def test_graph_conditions_and_wait_for_all(tmp_path: Path) -> None:
     runtime = Runtime.load(write_runtime(tmp_path))
     fakes.script(fakes.text("s"), fakes.text("l"), fakes.text("r"), fakes.text("m"))
 
-    events = await collect(runtime, InvocationRequest(agent="fan", prompt="go"))
+    events = await collect(runtime, InvocationRequest(agent="fan", messages=[{"role": "user", "content": "go"}]))
 
     stops = [e.node_id for e in events if isinstance(e, NodeStopEvent)]
     assert stops[0] == "split" and stops[-1] == "merge" and set(stops[1:3]) == {"left", "right"}
@@ -199,7 +203,7 @@ async def test_graph_limit_becomes_graph_failed_error(tmp_path: Path) -> None:
     )
     runtime = Runtime.load(write_runtime(tmp_path))
     fakes.script(*[fakes.text(str(i)) for i in range(10)])
-    events = await collect(runtime, InvocationRequest(agent="loop", prompt="go"))
+    events = await collect(runtime, InvocationRequest(agent="loop", messages=[{"role": "user", "content": "go"}]))
     final = events[-1]
     assert isinstance(final, ErrorEvent) and final.error_type == "GraphFailed", final
     assert "limits" in final.message
@@ -209,7 +213,7 @@ async def test_graph_limit_becomes_graph_failed_error(tmp_path: Path) -> None:
 async def test_graph_node_exception_becomes_graph_failed_error(tmp_path: Path) -> None:
     runtime = pipeline(tmp_path)
     fakes.script(fakes.text("the plan"))  # writer の分の台本がないので偽モデルが例外を投げる
-    events = await collect(runtime, InvocationRequest(prompt="go"))
+    events = await collect(runtime, InvocationRequest(messages=[{"role": "user", "content": "go"}]))
     final = events[-1]
     assert (
         isinstance(final, ErrorEvent) and final.error_type == "GraphFailed" and "no scripted response" in final.message
@@ -222,7 +226,9 @@ async def test_graph_cancellation_is_propagated_to_nodes(tmp_path: Path) -> None
     fakes.set_chunk_delay(0.02)
     cancel = threading.Event()
     try:
-        stream = runtime.invoker.stream(InvocationRequest(prompt="go"), cancel_signal=cancel)
+        stream = runtime.invoker.stream(
+            InvocationRequest(messages=[{"role": "user", "content": "go"}]), cancel_signal=cancel
+        )
         events: list[object] = [await anext(stream)]
         await asyncio.sleep(0.1)
         cancel.set()
@@ -258,7 +264,10 @@ async def test_swarm_handoff(tmp_path: Path) -> None:
         fakes.text("refund issued"),
     )
 
-    events = await collect(runtime, InvocationRequest(agent="support", prompt="I want a refund", session_id="s-1"))
+    events = await collect(
+        runtime,
+        InvocationRequest(agent="support", messages=[{"role": "user", "content": "I want a refund"}], session_id="s-1"),
+    )
 
     assert types(events)[0] == "start"
     tool_uses = [e for e in events if isinstance(e, ToolUseEvent)]
@@ -310,7 +319,9 @@ async def test_graph_schema_errors(tmp_path: Path) -> None:
 async def test_graph_in_job_mode_journals_node_events(tmp_path: Path) -> None:
     runtime = pipeline(tmp_path)
     fakes.script(fakes.text("the plan"), fakes.text("the draft"))
-    job = await runtime.jobs.submit(InvocationRequest(prompt="go", mode="job", session_id="gj-1"))
+    job = await runtime.jobs.submit(
+        InvocationRequest(messages=[{"role": "user", "content": "go"}], mode="job", session_id="gj-1")
+    )
     events = [e async for e in runtime.jobs.follow("gj-1", job.job_id)]
     assert types(events) == [
         "start",

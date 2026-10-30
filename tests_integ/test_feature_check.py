@@ -26,13 +26,13 @@ pytestmark = pytest.mark.skipif(not os.environ.get("OPENROUTER_API_KEY"), reason
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def runtime() -> Runtime:
     return Runtime.load(ROOT / "examples" / "feature-check" / "runtime.toml")
 
 
 async def run(runtime: Runtime, agent: str, prompt: str, **options: object) -> list[object]:
-    request = InvocationRequest(agent=agent, prompt=prompt, **options)  # type: ignore[arg-type]
+    request = InvocationRequest(agent=agent, messages=[{"role": "user", "content": prompt}], **options)  # type: ignore[arg-type]
     return [event async for event in runtime.invoker.stream(request)]
 
 

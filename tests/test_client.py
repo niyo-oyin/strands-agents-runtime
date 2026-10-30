@@ -59,17 +59,17 @@ def test_http_client_stream_and_invoke(http_client: HttpClient) -> None:
     fakes.script(fakes.text("streamed"), fakes.text("invoked"))
     sid = new_session_id()
 
-    streamed = list(http_client.stream("hi", agent="echoer", session_id=sid))
+    streamed = list(http_client.stream(messages=[{"role": "user", "content": "hi"}], agent="echoer", session_id=sid))
     assert "".join(e.text for e in streamed if isinstance(e, TextEvent)) == "streamed"
 
-    result = http_client.invoke("again", agent="echoer", session_id=sid)
+    result = http_client.invoke(messages=[{"role": "user", "content": "again"}], agent="echoer", session_id=sid)
     assert result.text == "invoked" and result.session_id == sid
 
 
 def test_http_client_can_continue_prompt_session_with_one_message(http_client: HttpClient) -> None:
     fakes.script(fakes.text("first answer"), fakes.text("second answer"))
     sid = new_session_id()
-    http_client.invoke("first", session_id=sid)
+    http_client.invoke(messages=[{"role": "user", "content": "first"}], session_id=sid)
     result = http_client.invoke(messages=[{"role": "user", "content": "second"}], session_id=sid)
     assert result.text == "second answer"
     assert [m["content"][0]["text"] for m in fakes.seen_messages()[-1]] == ["first", "first answer", "second"]
@@ -91,19 +91,19 @@ def test_http_client_submits_full_history_job_without_session(http_client: HttpC
 
 def test_http_client_raises_on_http_error(http_client: HttpClient) -> None:
     with pytest.raises(InvocationError, match="404"):
-        http_client.invoke("hi", agent="ghost")
+        http_client.invoke(messages=[{"role": "user", "content": "hi"}], agent="ghost")
 
 
 def test_http_client_raises_on_error_event(http_client: HttpClient) -> None:
     fakes.script()
     with pytest.raises(InvocationError, match="no scripted response"):
-        http_client.invoke("hi")
+        http_client.invoke(messages=[{"role": "user", "content": "hi"}])
 
 
 def test_http_client_submits_and_follows_a_job(http_client: HttpClient) -> None:
     fakes.script(fakes.tool_use("echo", {"text": "x"}), fakes.text("finished"))
 
-    job = http_client.submit("go", agent="echoer")
+    job = http_client.submit(messages=[{"role": "user", "content": "go"}], agent="echoer")
     assert job.job_id and len(job.session_id) >= 33
     result = job.result(wait=True)
     assert result is not None and result.text == "finished" and result.seq == 5
@@ -121,7 +121,7 @@ def test_http_client_submits_and_follows_a_job(http_client: HttpClient) -> None:
 
 def test_http_client_job_failure_raises(http_client: HttpClient) -> None:
     fakes.script()
-    job = http_client.submit("go")
+    job = http_client.submit(messages=[{"role": "user", "content": "go"}])
     with pytest.raises(InvocationError, match="no scripted response"):
         job.result(wait=True)
     assert job.status().state == "failed"

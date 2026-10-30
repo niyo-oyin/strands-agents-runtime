@@ -42,6 +42,7 @@ def transport_for(
     result = ResultEvent(agent="a", session_id="s", stop_reason=reason, text=text)
     job = {
         "type": "job",
+        "actor_id": "test-user",
         "agent": "a",
         "session_id": "s",
         "job_id": "j",
@@ -73,7 +74,7 @@ def test_pydantic_model_sent_as_strict_schema_and_parsed_locally(method):
     transport, requests, wire_result = transport_for()
     original_schema = Answer.model_json_schema()
     with HttpClient("https://runtime.example", transport=transport) as client:
-        result = getattr(client, method)("answer", response_format=Answer)
+        result = getattr(client, method)(messages=[{"role": "user", "content": "answer"}], response_format=Answer)
         if method == "stream":
             events = list(result)
             assert isinstance(events[0], TextEvent)
@@ -97,7 +98,7 @@ def test_pydantic_model_sent_as_strict_schema_and_parsed_locally(method):
 def test_recursive_model_schema_and_result():
     transport, requests, _ = transport_for('{"name":"root","children":[{"name":"child","children":[]}]}')
     with HttpClient("https://runtime.example", transport=transport) as client:
-        result = client.invoke("tree", response_format=Node)
+        result = client.invoke(messages=[{"role": "user", "content": "tree"}], response_format=Node)
     assert isinstance(result.parsed, Node) and result.parsed.children[0].name == "child"
     schema = requests[0]["response_format"]["json_schema"]["schema"]
     assert schema["type"] == "object" and "$ref" not in schema
@@ -110,7 +111,7 @@ def test_invalid_model_fails_before_network_without_consuming_stream(method, mod
     with HttpClient("https://runtime.example") as client:
         client._request = Mock(side_effect=AssertionError("must not send"))
         with pytest.raises((ValueError, TypeError)):
-            getattr(client, method)("answer", response_format=model)
+            getattr(client, method)(messages=[{"role": "user", "content": "answer"}], response_format=model)
         client._request.assert_not_called()
 
 
@@ -118,7 +119,7 @@ def test_invalid_model_fails_before_network_without_consuming_stream(method, mod
 def test_invalid_completed_output_raises_pydantic_validation_error(text):
     transport, _, _ = transport_for(text)
     with HttpClient("https://runtime.example", transport=transport) as client:
-        stream = client.stream("answer", response_format=Answer)
+        stream = client.stream(messages=[{"role": "user", "content": "answer"}], response_format=Answer)
         assert isinstance(next(stream), TextEvent)
         with pytest.raises(ValidationError):
             list(stream)
@@ -128,14 +129,16 @@ def test_invalid_completed_output_raises_pydantic_validation_error(text):
 def test_incomplete_results_remain_available_without_parsing(reason):
     transport, _, _ = transport_for('{"answer":', reason=reason)
     with HttpClient("https://runtime.example", transport=transport) as client:
-        result = client.invoke("answer", response_format=Answer)
+        result = client.invoke(messages=[{"role": "user", "content": "answer"}], response_format=Answer)
     assert result.parsed is None and result.stop_reason == reason
 
 
 def test_explicit_format_does_not_parse_output():
     transport, _, _ = transport_for()
     with HttpClient("https://runtime.example", transport=transport) as client:
-        result = client.invoke("answer", response_format={"type": "json_object"})
+        result = client.invoke(
+            messages=[{"role": "user", "content": "answer"}], response_format={"type": "json_object"}
+        )
     assert result.parsed is None and json.loads(result.text)["answer"] == "ok"
 
 
@@ -144,7 +147,11 @@ def test_explicit_format_does_not_parse_output():
 def test_job_results_keep_local_model_and_reattachment_can_restore_it(reattach, operation):
     transport, requests, _ = transport_for(pending=operation == "wait")
     with HttpClient("https://runtime.example", transport=transport) as client:
-        job = client.job("s", response_format=Answer) if reattach else client.submit("answer", response_format=Answer)
+        job = (
+            client.job("s", response_format=Answer)
+            if reattach
+            else client.submit(messages=[{"role": "user", "content": "answer"}], response_format=Answer)
+        )
         result = list(job.follow())[-1] if operation == "follow" else job.result(wait=operation == "wait")
     assert isinstance(result.parsed, Answer) and result.parsed.answer == "ok"
     assert all("response_format" not in p for p in requests if p.get("mode") != "job")

@@ -14,10 +14,11 @@ class RecordingClient(AgentClient):
 
     def _request(self, payload, *, session_id):
         self.requests.append((payload, session_id))
-        if payload.get("mode") == "job":
+        if payload.get("mode") in {"job", "status", "cancel"}:
             return iter(
                 [
                     JobEvent(
+                        actor_id=payload.get("actor_id", "test-user"),
                         job_id="job-1",
                         session_id=session_id or "generated",
                         agent="a",
@@ -41,12 +42,10 @@ class RecordingClient(AgentClient):
             },
             "exactly one message",
         ),
-        ({"prompt": "one", "messages": [{"role": "user", "content": "two"}]}, "mutually exclusive"),
         ({"messages": []}, "at least 1"),
         ({"messages": [{"role": "system", "content": "override"}]}, "user.*assistant"),
         ({"messages": [{"role": "user", "content": []}]}, "at least 1"),
-        ({"prompt": "one", "model": "missing-provider"}, "pattern"),
-        ({}, "prompt or messages is required"),
+        ({"messages": [{"role": "user", "content": "one"}], "model": "missing-provider"}, "pattern"),
     ],
 )
 def test_invalid_input_fails_before_transport_even_without_iterating_stream(method, arguments, match):
@@ -107,10 +106,10 @@ def test_optional_request_parameters_are_sent_only_when_specified(method):
         "max_turns": 5,
         "max_total_tokens": 2000,
     }
-    getattr(client, method)("go", **options)
+    getattr(client, method)(messages=[{"role": "user", "content": "go"}], **options)
     payload, _ = client.requests[-1]
     assert {key: payload[key] for key in options} == options
-    getattr(client, method)("go", **dict.fromkeys(options))
+    getattr(client, method)(messages=[{"role": "user", "content": "go"}], **dict.fromkeys(options))
     assert not set(options).intersection(client.requests[-1][0])
 
 
@@ -139,5 +138,48 @@ def test_invalid_options_fail_before_network(options):
     client = RecordingClient()
     client._request = Mock(side_effect=AssertionError("must not send"))
     with pytest.raises(ValueError):
-        client.stream("go", **options)
+        client.stream(messages=[{"role": "user", "content": "go"}], **options)
     client._request.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["invoke", "stream", "submit"])
+def test_prompt_and_positional_input_are_removed(method):
+    client = RecordingClient()
+    client._request = Mock(side_effect=AssertionError("must not send"))
+    with pytest.raises(TypeError):
+        getattr(client, method)("old input")
+    with pytest.raises(TypeError):
+        getattr(client, method)(prompt="old input")
+    client._request.assert_not_called()
+
+
+@pytest.mark.parametrize("options", [{"store": "false"}, {"store": 0}, {"actor_id": ""}, {"actor_id": " "}])
+def test_invalid_storage_options_fail_before_network(options):
+    client = RecordingClient()
+    client._request = Mock(side_effect=AssertionError("must not send"))
+    with pytest.raises(ValueError):
+        client.stream(messages=[{"role": "user", "content": "hi"}], **options)
+    client._request.assert_not_called()
+
+
+def test_store_false_and_actor_are_preserved_in_payload():
+    client = RecordingClient()
+    client.invoke(messages=[{"role": "user", "content": "hi"}], actor_id="alice", store=False, session_id="s")
+    payload, _ = client.requests[0]
+    assert payload["store"] is False and payload["actor_id"] == "alice"
+
+
+@pytest.mark.parametrize("actor", [None, "alice"])
+def test_job_handles_keep_actor_for_all_operations(actor):
+    client = RecordingClient()
+    submitted = client.submit(messages=[{"role": "user", "content": "hi"}], actor_id=actor)
+    reattached = client.job(submitted.session_id, actor_id=actor)
+    explicit = client.job(submitted.session_id, submitted.job_id, actor_id=submitted.actor_id)
+    client.requests.clear()
+    for handle in (submitted, reattached, explicit):
+        handle.status()
+        list(handle.follow())
+        handle.result()
+        handle.cancel()
+    assert len(client.requests) == 12
+    assert all(payload["actor_id"] == (actor or "test-user") for payload, _ in client.requests)

@@ -238,6 +238,7 @@ class SessionSection(_Strict):
     """会話の排他と、その配下の履歴保存。"""
 
     backend: Literal["none", "local", "dynamodb", "cosmos", "agentcore"] = "none"
+    default_actor_id: NonBlankStr | None = None
     namespace: NonBlankStr = "default"
     sqlite_path: NonBlankStr = "./.runtime/execution.sqlite3"
     dynamodb: DynamoSpec | None = None

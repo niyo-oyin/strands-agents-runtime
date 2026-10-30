@@ -56,9 +56,9 @@ class AgentClient(ABC):
 
     def stream(
         self,
-        prompt: str | list[dict[str, Any]] | None = None,
         *,
-        messages: Sequence[Message | dict[str, Any]] | None = None,
+        messages: Sequence[Message | dict[str, Any]],
+        store: bool | None = None,
         model: str | None = None,
         max_output_tokens: int | None = None,
         temperature: float | None = None,
@@ -76,12 +76,12 @@ class AgentClient(ABC):
     ) -> Iterator[Any]:
         """ランタイムのイベントを届いた順に返す。"""
         payload = self._payload(
-            prompt,
             agent,
             session_id,
             actor_id,
             invocation_state,
             messages=messages,
+            store=store,
             model=model,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
@@ -97,9 +97,9 @@ class AgentClient(ABC):
 
     def submit(
         self,
-        prompt: str | list[dict[str, Any]] | None = None,
         *,
-        messages: Sequence[Message | dict[str, Any]] | None = None,
+        messages: Sequence[Message | dict[str, Any]],
+        store: bool | None = None,
         model: str | None = None,
         max_output_tokens: int | None = None,
         temperature: float | None = None,
@@ -123,12 +123,12 @@ class AgentClient(ABC):
         後続の操作に使うセッション ID は、受付結果からハンドルに保持する。
         """
         payload = self._payload(
-            prompt,
             agent,
             session_id,
             actor_id,
             invocation_state,
             messages=messages,
+            store=store,
             model=model,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
@@ -146,18 +146,28 @@ class AgentClient(ABC):
         event = self._single(payload, session_id=session_id)
         if not isinstance(event, JobEvent):
             raise InvocationError("UnexpectedResponse", f"expected a job event, got {event.type}")
-        return JobHandle(self, event.session_id, event.job_id, output_model=response_model(response_format))
+        return JobHandle(
+            self, event.session_id, event.job_id, actor_id=event.actor_id, output_model=response_model(response_format)
+        )
 
     def job(
-        self, session_id: str, job_id: str | None = None, *, response_format: type[BaseModel] | None = None
+        self,
+        session_id: str,
+        job_id: str | None = None,
+        *,
+        actor_id: str | None = None,
+        response_format: type[BaseModel] | None = None,
     ) -> JobHandle:
         """既存のジョブのハンドル。``job_id`` を省略するとそのセッションの最新のジョブを指す。"""
         output_model = response_model(response_format)
         if response_format is not None and output_model is None:
             raise TypeError("job response_format must be a Pydantic BaseModel subclass")
         if job_id is None:
-            job_id = self._job_event({"mode": "status"}, session_id).job_id
-        return JobHandle(self, session_id, job_id, output_model=output_model)
+            event = self._job_event(
+                {"mode": "status", **({"actor_id": actor_id} if actor_id is not None else {})}, session_id
+            )
+            job_id, actor_id = event.job_id, event.actor_id
+        return JobHandle(self, session_id, job_id, actor_id=actor_id, output_model=output_model)
 
     def _single(self, payload: dict[str, Any], *, session_id: str | None) -> Any:
         """JSON で 1 イベント返る操作。"""
@@ -173,9 +183,9 @@ class AgentClient(ABC):
 
     def invoke(
         self,
-        prompt: str | list[dict[str, Any]] | None = None,
         *,
-        messages: Sequence[Message | dict[str, Any]] | None = None,
+        messages: Sequence[Message | dict[str, Any]],
+        store: bool | None = None,
         model: str | None = None,
         max_output_tokens: int | None = None,
         temperature: float | None = None,
@@ -193,8 +203,8 @@ class AgentClient(ABC):
     ) -> ResultEvent:
         """最後まで実行して ``result`` を返す。ランタイムが ``error`` を返したら :class:`InvocationError`。"""
         for event in self.stream(
-            prompt,
             messages=messages,
+            store=store,
             model=model,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
@@ -218,13 +228,13 @@ class AgentClient(ABC):
 
     @staticmethod
     def _payload(
-        prompt: str | list[dict[str, Any]] | None,
         agent: str | None,
         session_id: str | None,
         actor_id: str | None,
         invocation_state: dict[str, Any] | None,
         *,
-        messages: Sequence[Message | dict[str, Any]] | None = None,
+        messages: Sequence[Message | dict[str, Any]],
+        store: bool | None = None,
         model: str | None = None,
         max_output_tokens: int | None = None,
         temperature: float | None = None,
@@ -239,8 +249,9 @@ class AgentClient(ABC):
         """``POST /invocations`` のペイロード。未指定の項目は送らず、サーバー側の既定に任せる。"""
         inputs = InvocationInput.model_validate(
             {
-                "prompt": prompt,
                 "messages": messages,
+                "store": store,
+                "actor_id": actor_id,
                 "session_id": session_id,
                 "model": model,
                 "max_output_tokens": max_output_tokens,
@@ -258,8 +269,6 @@ class AgentClient(ABC):
         payload: dict[str, Any] = {**inputs.model_dump(exclude_none=True, by_alias=True), "stream": True}
         if agent is not None:
             payload["agent"] = agent
-        if actor_id is not None:
-            payload["actor_id"] = actor_id
         if invocation_state:
             payload["invocation_state"] = invocation_state
         return payload
@@ -269,15 +278,28 @@ class JobHandle:
     """投入済みのジョブ 1 つに対する操作（設計文書 §7.6.2 の ``status`` / ``follow`` / ``result`` / ``cancel``）。"""
 
     def __init__(
-        self, client: AgentClient, session_id: str, job_id: str, *, output_model: type[BaseModel] | None = None
+        self,
+        client: AgentClient,
+        session_id: str,
+        job_id: str,
+        *,
+        actor_id: str | None = None,
+        output_model: type[BaseModel] | None = None,
     ) -> None:
         self._client = client
         self._output_model = output_model
         self.session_id = session_id
         self.job_id = job_id
+        self.actor_id = actor_id
 
     def _payload(self, mode: str, **extra: Any) -> dict[str, Any]:
-        return {"mode": mode, "session_id": self.session_id, "job_id": self.job_id, **extra}
+        return {
+            "mode": mode,
+            "session_id": self.session_id,
+            "job_id": self.job_id,
+            **({"actor_id": self.actor_id} if self.actor_id is not None else {}),
+            **extra,
+        }
 
     def status(self) -> JobEvent:
         return self._client._job_event(self._payload("status"), self.session_id)

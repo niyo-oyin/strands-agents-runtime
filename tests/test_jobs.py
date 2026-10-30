@@ -23,7 +23,9 @@ from tests.conftest import write_agent, write_runtime
 
 
 async def submit(runtime: Runtime, prompt: str = "hi", **options: object) -> JobEvent:
-    return await runtime.jobs.submit(InvocationRequest(prompt=prompt, mode="job", **options))  # type: ignore[arg-type]
+    return await runtime.jobs.submit(
+        InvocationRequest(messages=[{"role": "user", "content": prompt}], mode="job", **options)
+    )  # type: ignore[arg-type]
 
 
 async def follow_all(runtime: Runtime, session_id: str, job_id: str | None = None, *, after: int = 0) -> list[object]:
@@ -40,6 +42,7 @@ def stale_record(session_id: str, *, minutes_ago: int = 10) -> JobRecord:
     """別のプロセスが持っていた（そして消えた）実行中のジョブの記録。"""
     then = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).replace(microsecond=0).isoformat()
     return JobRecord(
+        actor_id="test-user",
         job_id=str(uuid.uuid4()),
         session_id=session_id,
         agent="echoer",
@@ -125,14 +128,20 @@ async def test_running_job_blocks_the_session_until_it_finishes(runtime: Runtime
     try:
         job = await submit(runtime, session_id="job-busy")
         with pytest.raises(SessionBusyError):
-            await anext(runtime.invoker.stream(InvocationRequest(prompt="again", session_id="job-busy")))
+            await anext(
+                runtime.invoker.stream(
+                    InvocationRequest(messages=[{"role": "user", "content": "again"}], session_id="job-busy")
+                )
+            )
         with pytest.raises(SessionBusyError):
             await submit(runtime, session_id="job-busy")
         assert (await runtime.jobs.status("job-busy", job.job_id)).state == "running"
     finally:
         fakes.set_chunk_delay(0.0)
     await follow_all(runtime, "job-busy", job.job_id)
-    result = await runtime.invoker.invoke(InvocationRequest(prompt="again", session_id="job-busy"))
+    result = await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "again"}], session_id="job-busy")
+    )
     assert isinstance(result, ResultEvent) and result.text == "next"
 
 
@@ -143,7 +152,11 @@ async def test_job_running_elsewhere_blocks_the_session_too(runtime: Runtime) ->
     await journal.write_record(record)
     await journal.write_latest("job-remote", record.job_id)
     with pytest.raises(SessionBusyError):
-        await anext(runtime.invoker.stream(InvocationRequest(prompt="hi", session_id="job-remote")))
+        await anext(
+            runtime.invoker.stream(
+                InvocationRequest(messages=[{"role": "user", "content": "hi"}], session_id="job-remote")
+            )
+        )
     assert (await runtime.jobs.cancel("job-remote")).state == "cancelling"
     stored = await journal.read_cancellation("job-remote", record.job_id)
     assert stored is not None and stored.requested_at and stored.by == "client"
@@ -188,7 +201,12 @@ async def test_lost_job_is_failed_when_observed(runtime: Runtime) -> None:
     assert stored is not None and stored.state == "running" and stored.seq == 1
     # 新しい実行は受け付けられる。
     fakes.script(fakes.text("fresh"))
-    assert isinstance(await runtime.invoker.invoke(InvocationRequest(prompt="go", session_id="job-lost")), ResultEvent)
+    assert isinstance(
+        await runtime.invoker.invoke(
+            InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="job-lost")
+        ),
+        ResultEvent,
+    )
 
 
 async def test_unknown_job(runtime: Runtime) -> None:
@@ -252,7 +270,9 @@ async def test_include_subagents_tags_nested_events(tmp_path: Path) -> None:
     runtime = Runtime.load(write_runtime(tmp_path))
     fakes.script(fakes.tool_use("child", {"input": "hello"}), fakes.text("child says hi"), fakes.text("done"))
 
-    request = InvocationRequest(agent="parent", prompt="go", session_id="nest-1", include_subagents=True)
+    request = InvocationRequest(
+        agent="parent", messages=[{"role": "user", "content": "go"}], session_id="nest-1", include_subagents=True
+    )
     events = [e async for e in runtime.invoker.stream(request)]
 
     nested = [e for e in events if getattr(e, "parent", None) is not None]
@@ -268,7 +288,10 @@ async def test_include_subagents_tags_nested_events(tmp_path: Path) -> None:
 
     fakes.script(fakes.tool_use("child", {"input": "hello"}), fakes.text("child says hi"), fakes.text("done"))
     plain = [
-        e async for e in runtime.invoker.stream(InvocationRequest(agent="parent", prompt="go", session_id="nest-2"))
+        e
+        async for e in runtime.invoker.stream(
+            InvocationRequest(agent="parent", messages=[{"role": "user", "content": "go"}], session_id="nest-2")
+        )
     ]
     assert all(getattr(e, "parent", None) is None for e in plain)
 

@@ -243,10 +243,14 @@ backend = "{one.config.backend}"
     fakes.script(fakes.text("x" * 500))
     fakes.set_chunk_delay(0.01)
     try:
-        job = await first.jobs.submit(InvocationRequest(prompt="go", session_id="shared"))
+        job = await first.jobs.submit(
+            InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="shared")
+        )
         assert (await second.jobs.status("shared")).job_id == job.job_id
         with pytest.raises(SessionBusyError):
-            await second.invoker.invoke(InvocationRequest(prompt="go", session_id="shared"))
+            await second.invoker.invoke(
+                InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="shared")
+            )
         assert (await second.jobs.cancel("shared")).state == "cancelling"
         async with asyncio.timeout(5):
             async for _ in first.jobs.follow("shared"):

@@ -19,7 +19,7 @@ from typing import Any, Protocol
 
 from opentelemetry import trace
 
-from strands_runtime.errors import JobsDisabledError, UnknownJobError
+from strands_runtime.errors import JobsDisabledError, SessionAccessError, UnknownJobError
 from strands_runtime.invoke.invoker import CANCEL_DRAIN_SECONDS, InvocationRequest, Invoker, _aclose
 from strands_runtime.jobs.journal import JobCancellation, JobJournal, JobRecord, seconds_since, utcnow
 from strands_runtime_client.events import (
@@ -102,11 +102,15 @@ class JobManager:
         ここでもそのまま呼び出し側（サーバー層）に伝わる。
         """
         journal = self._require_journal()
+        actor = self._invoker.resolve_actor_id(request.actor_id, required=True)
+        assert actor is not None
         job_id = str(uuid.uuid4())
         _tag_span(job_id)
         cancel = threading.Event()
         # ジョブでは差分を流さず、メッセージ単位のテキストをジャーナルに書く。推論は記録しない。
-        effective = request.model_copy(update={"include_reasoning": False, "stream": True})
+        effective = request.model_copy(
+            update={"include_reasoning": False, "stream": True, "actor_id": actor, "mode": "job"}
+        )
         stream = self._invoker.stream(
             effective,
             session_id=session_id,
@@ -120,6 +124,7 @@ class JobManager:
 
         now = utcnow()
         record = JobRecord(
+            actor_id=actor,
             job_id=job_id,
             session_id=first.session_id,
             agent=first.agent,
@@ -215,12 +220,14 @@ class JobManager:
 
     # ---- 観測 --------------------------------------------------------------------------------------------------
 
-    async def status(self, session_id: str, job_id: str | None = None) -> JobEvent:
-        return (await self._load(session_id, job_id)).as_event()
+    async def status(self, session_id: str, job_id: str | None = None, *, actor_id: str | None = None) -> JobEvent:
+        return (await self._load(session_id, job_id, actor_id=actor_id)).as_event()
 
-    async def result(self, session_id: str, job_id: str | None = None) -> ResultEvent | ErrorEvent | JobEvent:
+    async def result(
+        self, session_id: str, job_id: str | None = None, *, actor_id: str | None = None
+    ) -> ResultEvent | ErrorEvent | JobEvent:
         """終端なら最後に記録した ``result`` / ``error`` を、実行中なら現在の記録を返す。"""
-        record = await self._load(session_id, job_id)
+        record = await self._load(session_id, job_id, actor_id=actor_id)
         if not record.finished:
             return record.as_event()
         if record.error_type == "JobLost":
@@ -232,9 +239,11 @@ class JobManager:
         # 終端イベントの書き込みだけが失われた場合。記録の状態から同じ意味のエラーを返す。
         return ErrorEvent(error_type=record.error_type or "JournalIncomplete", message="terminal event is missing")
 
-    async def follow(self, session_id: str, job_id: str | None = None, *, after: int = 0) -> AsyncIterator[Any]:
+    async def follow(
+        self, session_id: str, job_id: str | None = None, *, actor_id: str | None = None, after: int = 0
+    ) -> AsyncIterator[Any]:
         """``after`` の次からイベントを再生し、実行中ならそのまま終端まで追従する。"""
-        record = await self._load(session_id, job_id)
+        record = await self._load(session_id, job_id, actor_id=actor_id)
         job = self._running.get(record.job_id)
         if job is not None:
             async for event in self._follow_local(job, after):
@@ -271,13 +280,15 @@ class JobManager:
             if record.finished:
                 return
             await asyncio.sleep(FOLLOW_POLL_SECONDS)
-            record = await self._load(record.session_id, record.job_id)
+            record = await self._load(record.session_id, record.job_id, actor_id=record.actor_id)
 
     # ---- 停止 --------------------------------------------------------------------------------------------------
 
-    async def cancel(self, session_id: str, job_id: str | None = None, *, by: CancelledBy = "client") -> JobEvent:
+    async def cancel(
+        self, session_id: str, job_id: str | None = None, *, actor_id: str | None = None, by: CancelledBy = "client"
+    ) -> JobEvent:
         """停止を要求する。冪等で、終端のジョブには現在の記録を返すだけ。"""
-        record = await self._load(session_id, job_id)
+        record = await self._load(session_id, job_id, actor_id=actor_id)
         if record.finished:
             return record.as_event()
         job = self._running.get(record.job_id)
@@ -306,14 +317,14 @@ class JobManager:
         """実行中の全ジョブに停止を要求し、猶予まで待つ（グレースフルシャットダウン）。"""
         jobs = list(self._running.values())
         for job in jobs:
-            await self.cancel(job.record.session_id, job.record.job_id, by="runtime")
+            await self.cancel(job.record.session_id, job.record.job_id, actor_id=job.record.actor_id, by="runtime")
         tasks = [job.task for job in jobs if job.task is not None]
         if tasks:
             await asyncio.wait(tasks, timeout=CANCEL_DRAIN_SECONDS + 5)
 
     # ---- 排他 --------------------------------------------------------------------------------------------------
 
-    async def session_busy(self, session_id: str) -> bool:
+    async def session_busy(self, session_id: str, actor_id: str | None) -> bool:
         """最新のジョブが実行中で、心拍が新しいか自プロセスのものなら、そのセッションは使用中。
 
         Invoker は同期実行とジョブのどちらを始める前にもこれを呼ぶので、別レプリカのジョブとの競合も 409 になる。
@@ -324,7 +335,11 @@ class JobManager:
         if latest is None:
             return False
         record = await self._journal.read_record(session_id, latest)
-        if record is None or record.finished:
+        if record is None:
+            return False
+        if record.actor_id != actor_id:
+            raise SessionAccessError()
+        if record.finished:
             return False
         return latest in self._running or seconds_since(record.updated_at) < LOST_AFTER_SECONDS
 
@@ -335,20 +350,21 @@ class JobManager:
             raise JobsDisabledError()
         return self._journal
 
-    async def _load(self, session_id: str, job_id: str | None) -> JobRecord:
+    async def _load(self, session_id: str, job_id: str | None, *, actor_id: str | None = None) -> JobRecord:
         """記録を読む。心拍が途絶えたジョブはJobLostとして返すが、所有者の記録は上書きしない。"""
         journal = self._require_journal()
+        actor = self._invoker.resolve_actor_id(actor_id, required=True)
         resolved = job_id or await journal.read_latest(session_id)
         if resolved is None:
             raise UnknownJobError(session_id, job_id)
         _tag_span(resolved)
         job = self._running.get(resolved)
-        if job is not None:
-            return job.record
-        record = await journal.read_record(session_id, resolved)
+        record = job.record if job is not None else await journal.read_record(session_id, resolved)
         if record is None:
             raise UnknownJobError(session_id, job_id)
-        if not record.finished and seconds_since(record.updated_at) >= LOST_AFTER_SECONDS:
+        if record.session_id != session_id or record.actor_id != actor:
+            raise SessionAccessError()
+        if job is None and not record.finished and seconds_since(record.updated_at) >= LOST_AFTER_SECONDS:
             record = await self._mark_lost(record)
         return record
 

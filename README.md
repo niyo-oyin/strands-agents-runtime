@@ -49,7 +49,7 @@ Docker 関連タスクには Docker が必要です（Windows では Linux コ�
 uv sync
 uv run strands-runtime validate                     # 定義・コード参照・SKILL.md の検証（--mcp で MCP 接続も）
 uv run strands-runtime list                         # 公開エージェント一覧
-uv run strands-runtime run assistant "今日は何日？"   # サーバーなしで 1 回実行
+uv run strands-runtime run assistant --messages '[{"role": "user", "content": "今日は何日？"}]'   # サーバーなしで 1 回実行
 uv run strands-runtime serve --port 8080            # http://127.0.0.1:8080
 ```
 
@@ -61,14 +61,14 @@ API キーは `.env.example` をコピーして編集し、`--env-file` で渡�
 ```powershell
 Copy-Item .env.example .env
 # .env の値を編集してから実行
-uv run --env-file .env strands-runtime run assistant "今日は何日？"
+uv run --env-file .env strands-runtime run assistant --messages '[{"role": "user", "content": "今日は何日？"}]'
 uv run --env-file .env strands-runtime serve --port 8080
 ```
 
 HTTP 呼び出しは、別の PowerShell で次のように実行できます。
 
 ```powershell
-$body = @{ agent = "assistant"; prompt = "こんにちは"; stream = $false } | ConvertTo-Json
+$body = @{ agent = "assistant"; messages = @(@{ role = "user"; content = "こんにちは" }); stream = $false } | ConvertTo-Json -Depth 10
 Invoke-RestMethod -Uri http://localhost:8080/invocations -Method Post `
   -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
 ```
@@ -83,7 +83,7 @@ Windows の絶対パスを書く場合は、`dir = 'C:\work\sessions'` のよう
 ```bash
 curl -N -X POST localhost:8080/invocations \
   -H 'Content-Type: application/json' \
-  -d '{"agent": "assistant", "prompt": "こんにちは", "session_id": "0f1e2d3c-0000-4000-8000-000000000001"}'
+  -d '{"agent": "assistant", "messages": [{"role": "user", "content": "こんにちは"}], "session_id": "0f1e2d3c-0000-4000-8000-000000000001"}'
 ```
 
 Python クライアントは [packages/client](packages/client) で独立配布できます。
@@ -110,17 +110,17 @@ client = HttpClient("http://127.0.0.1:8080")
 # client = AgentCoreClient(runtime_arn="arn:aws:bedrock-agentcore:...:runtime/...")
 
 sid = new_session_id()
-for event in client.stream("こんにちは", agent="assistant", session_id=sid):
+for event in client.stream(messages=[{"role": "user", "content": "こんにちは"}], agent="assistant", session_id=sid):
     if event.type == "text":
         print(event.text, end="")
-result = client.invoke("続きをお願い", agent="assistant", session_id=sid)
+result = client.invoke(messages=[{"role": "user", "content": "続きをお願い"}], agent="assistant", session_id=sid)
 print(result.text, result.metrics)
 ```
 
 長時間の実行は接続を保たずにジョブとして投入し、後から進捗と結果を取れます。
 
 ```python
-job = client.submit("…時間のかかる依頼…", agent="assistant")      # mode="job"。すぐ返る
+job = client.submit(messages=[{"role": "user", "content": "…時間のかかる依頼…"}], agent="assistant")      # mode="job"。すぐ返る
 print(job.status().state)                                          # running / completed / failed …
 for event in job.follow(after=0):                                  # ジャーナルを再生し、実行中なら追従する
     print(event.seq, event.type)
@@ -130,7 +130,7 @@ job.cancel()                                                       # 冪等
 
 ```bash
 curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
-  -d '{"agent": "assistant", "prompt": "…", "mode": "job", "session_id": "<36 文字以上>"}'
+  -d '{"agent": "assistant", "messages": [{"role": "user", "content": "…"}], "mode": "job", "session_id": "<36 文字以上>"}'
 curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
   -d '{"mode": "status", "session_id": "<同じ ID>"}'          # follow / result / cancel も同じ形
 ```
@@ -150,7 +150,7 @@ id = "openai-chat/gpt-4.1-mini"                 # キーは環境変数 OPENAI_A
 ```
 
 ```bash
-uv run --env-file .env strands-runtime run assistant "今日は何日？"
+uv run --env-file .env strands-runtime run assistant --messages '[{"role": "user", "content": "今日は何日？"}]'
 ```
 
 | id の形式 | 使う API | 用途 |
@@ -174,7 +174,7 @@ api_key_env = "AZURE_OPENAI_API_KEY"
 params = {}                                    # 推論パラメータを送らず、デプロイ側の既定値を使う
 ```
 
-`.env` に `AZURE_OPENAI_API_KEY=...` を設定し、`uv run --env-file .env strands-runtime run assistant "こんにちは"` で実行します。
+`.env` に `AZURE_OPENAI_API_KEY=...` を設定し、`uv run --env-file .env strands-runtime run assistant --messages '[{"role": "user", "content": "こんにちは"}]'` で実行します。
 `base_url` は `/responses` を含めず `/openai/v1/` までを指定し、`id` の `openai/` より後ろにはデプロイ名を書きます。
 この設定は API キー認証の v1 API 向けで、`api-version` は不要です（[Microsoft の公式手順](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle?tabs=key)）。
 Microsoft Entra ID の自動トークン更新が必要な場合は、既存の `model.module` でクライアント引数にトークン取得関数を渡すモデルファクトリを用意します。
@@ -224,22 +224,23 @@ api_key_env = "LOCAL_LLM_API_KEY"      # 値ではなく変数名。OPENAI_API_K
 ```bash
 echo 'OPENROUTER_API_KEY=...' > .env
 uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml list
-uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run skilled "俳句スタイルで秋について" --json
+uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run skilled --messages '[{"role": "user", "content": "俳句スタイルで秋について"}]' --json
 ```
 
 ## 呼び出しの契約（要点）
 
-- `POST /invocations` の主なフィールド: `agent`、`prompt` または `messages`、`model`、`session_id`、`actor_id`、`stream`、`invocation_state`、`include_reasoning`、`tool_result_detail`（`preview` / `full`）。
-- `prompt` は文字列または content block 配列、`messages` は `role`（`user` / `assistant`）と `content` の配列。`content` は文字列または Strands 形式の content block 配列で、画像等の `source.bytes` は base64。両フィールドの同時指定は不可。
-- `session_id` 指定時の `messages` は1件のみ。Python クライアントは通信前に検証する。`messages` の全履歴を送る場合は `session_id` を省略し、保存済み履歴は読み書きしない。履歴継続の指定は JSON 本文の `session_id` で行う。
+- `POST /invocations` の主なフィールド: `agent`、`messages`、`store`、`model`、`session_id`、`actor_id`、`stream`、`invocation_state`、`include_reasoning`、`tool_result_detail`（`preview` / `full`）。
+- 入力は `messages` に統一し、 `role`（`user` / `assistant`）と `content` の配列。`content` は文字列または Strands 形式の content block 配列で、画像等の `source.bytes` は base64。`prompt` は受け付けない。
+- `session_id` 指定時の `messages` は1件のみ。Python クライアントは通信前に検証する。全履歴は `session_id` を省略して渡す。`store=True` なら新規保存し、省略時は保存しない。セッション継続時の `store=False` は読み込みのみ。履歴継続の指定は JSON 本文の `session_id` で行う。
+- 保存・履歴復元・ジョブ操作には `actor_id` が必要。単一ユーザーでは `[session] default_actor_id` を設定できる。別actorの会話・ジョブは403。`store` は会話履歴への書き込みを制御し、ログ・トレース・ジョブ記録は別管理。
 - `model` は `provider/model-id` 形式で、同じプロバイダーのモデルを今回だけ上書きする。接続設定を引き継ぎ、指定時はフォールバックを使わない。`model.module` と Graph / Swarm のモデル上書きは不可。入力例と詳しい制約は [クライアントのREADME](packages/client/README.md#messages-とモデル指定) を参照。
 - 生成条件は `max_output_tokens`・`temperature`・`top_p`・`reasoning_effort`・`response_format`・`tool_choice`、実行上限は `timeout_seconds`・`max_turns`・`max_total_tokens` で指定できる。未指定は定義・ランタイムの既定値を継承し、実行上限は定義側の上限を超えない。対応範囲と使用例は [呼び出しごとのパラメータ](packages/client/README.md#呼び出しごとのパラメータ) を参照。
 - イベント: `start` → `text` / `reasoning` / `tool_use` / `tool_result` … → `result`（`stop_reason`、`text`、`structured_output`、`metrics`）または `error`。
 - `response_format` にはPydanticモデルクラスも指定でき、正常完了時の検証済み結果を `result.parsed` で取得できる。スキーマ指定済みのエージェントでは出力形式の上書きを拒否する。
 - `stop_reason` は Strands の値に加え、`structured_output`（構造化回答）と `timeout`（`[limits] timeout_seconds` 超過）をランタイムが返す。
 - `[server] workers` で同じホスト内の複数ワーカーを起動できる。各ワーカーの同時実行は既定16件、待機は64件・30秒まで。同じセッションの実行・待機中は共有する実行管理を通じて409、満杯・待機時間切れは503を返す。AgentCoreは1ワーカー＋メモリ、ローカルの複数ワーカーはSQLite、複数コンテナはDynamoDB / Cosmos DBで調整する。環境ごとの制約とスレッド数・TCP backlogの設定は [同時実行と負荷の調整](docs/manual.md#6-同時実行と負荷の調整) を参照。
-- 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）は `prompt = [{"interruptResponse": {...}}]` で再開。
-- `kind = "graph"` / `"swarm"` の定義で Graph / Swarm を宣言し、`prompt` または1件の `user` メッセージで呼べる。ノードの遷移は `node_start` / `node_stop` / `handoff` イベント、ノード別の結果は `result.nodes`。
+- 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）はuserメッセージのcontentに `[{"interruptResponse": {...}}]` を入れて再開。
+- `kind = "graph"` / `"swarm"` の定義で Graph / Swarm を宣言し、1件の `user` メッセージで呼べる。ノードの遷移は `node_start` / `node_stop` / `handoff` イベント、ノード別の結果は `result.nodes`。
 - `mode`（`run` / `job` / `status` / `follow` / `result` / `cancel`）でジョブを操作する。ジョブのイベントには `seq` / `ts` が付き、`follow` は `after` から再生する。`include_subagents = true` でサブエージェント内のイベントを `agent` / `parent` 付きで流す。
 - ジョブのジャーナルは `[session.history]` のlocal（同じディレクトリのSQLite）/ S3 / DynamoDB / Cosmos DBを継承する。`[jobs] storage = "session"` なら排他用の外部DBを使う。履歴が `agentcore_memory` / `none` の構成では `[jobs]` を明示しない限りジョブは無効。
 - 実モデルの結合テスト: `uv run --env-file .env pytest tests_integ -q`
@@ -253,7 +254,7 @@ OTLP を受ける LLM 可視化ツール（Arize Phoenix、Langfuse、LangSmith�
 ```bash
 make phoenix-up      # Arize Phoenix を Docker で起動（UI: http://localhost:6006）
 OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
-  uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run coordinator "要約して: ..."
+  uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run coordinator --messages '[{"role": "user", "content": "要約して: ..."}]'
 ```
 
 PowerShell では環境変数を `$env:` で設定します。
@@ -263,7 +264,7 @@ uv run python scripts/dev.py phoenix-up
 $env:OTEL_TRACES_EXPORTER = "otlp"
 $env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:6006"
 $env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
-uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run coordinator "要約して: ..."
+uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run coordinator --messages '[{"role": "user", "content": "要約して: ..."}]'
 uv run python scripts/dev.py phoenix-down
 ```
 
@@ -278,7 +279,7 @@ docker buildx build --platform linux/arm64 -t strands-runtime --load .
 
 # ローカル実行: キーは .env から渡し、OTel コレクターがないので SDK を無効化する
 docker run --rm -p 8080:8080 --env-file .env -e OTEL_SDK_DISABLED=true strands-runtime
-curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' -d '{"prompt":"こんにちは","stream":false}'
+curl -s -X POST localhost:8080/invocations -H 'Content-Type: application/json' -d '{"messages": [{"role": "user", "content": "こんにちは"}],"stream":false}'
 ```
 
 - 起動コマンドは `opentelemetry-instrument strands-runtime serve --port 8080`。AgentCore 上では Runtime が注入する ADOT の環境変数でトレースが CloudWatch に送られるため、`OTEL_SDK_DISABLED` は付けません。

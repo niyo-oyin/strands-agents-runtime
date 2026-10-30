@@ -19,7 +19,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from strands_runtime.definitions.schema import HistorySpec, SessionSection
-from strands_runtime.errors import CapacityError, DefinitionError, SessionBusyError
+from strands_runtime.errors import CapacityError, DefinitionError, SessionAccessError, SessionBusyError
 
 
 async def settled[T](operation: Callable[[], T]) -> T:
@@ -225,6 +225,18 @@ class SharedStore:
 
     async def inspect(self, session_id: str) -> dict[str, Any] | None:
         return await settled(lambda: self.get(self.key("reservation", session_id)))
+
+    async def authorize_owner(self, session_id: str, actor_id: str | None, *, claim: bool) -> None:
+        def check() -> None:
+            key = self.key("session-owner", session_id)
+            if claim:
+                assert actor_id is not None
+                self.put({"id": key, "actor_id": actor_id}, exclusive=True)
+            row = self.get(key)
+            if row is not None and row["actor_id"] != actor_id:
+                raise SessionAccessError()
+
+        await settled(check)
 
     async def recover(self, session_id: str, owner: str) -> bool:
         return await settled(lambda: self.delete_owner(self.key("reservation", session_id), owner))

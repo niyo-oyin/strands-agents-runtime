@@ -77,8 +77,8 @@ def build_context_injectors(agent: ResolvedAgent, session: SessionContext) -> li
         elif entry == "actor":
             actor = session.actor_id
 
-            def render_actor(_: InjectionContext, actor: str = actor) -> str:
-                return f"<actor_id>{actor}</actor_id>"
+            def render_actor(_: InjectionContext, actor: str | None = actor) -> str | None:
+                return f"<actor_id>{actor}</actor_id>" if actor is not None else None
 
             plugins.append(ContextInjector(render_actor, name=f"{agent.name}:inject:actor"))
         else:

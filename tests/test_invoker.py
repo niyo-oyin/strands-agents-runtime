@@ -44,7 +44,11 @@ async def collect(runtime: Runtime, request: InvocationRequest, **kwargs: object
 
 
 def run_for(**options: object) -> _Run:
-    return _Run(InvocationRequest(prompt="x", **options), agent_name="a", session=SessionContext("s"))  # type: ignore[arg-type]
+    return _Run(
+        InvocationRequest(messages=[{"role": "user", "content": "x"}], **options),
+        agent_name="a",
+        session=SessionContext("s"),
+    )  # type: ignore[arg-type]
 
 
 def test_normalize_text_messages_and_reasoning_option() -> None:
@@ -89,7 +93,10 @@ def test_decode_prompt_turns_base64_media_into_bytes() -> None:
 async def test_stream_tool_call_then_answer(runtime: Runtime) -> None:
     fakes.script(fakes.tool_use("echo", {"text": "ping"}), fakes.text("pong"))
 
-    events = await collect(runtime, InvocationRequest(agent="echoer", prompt="hello", session_id="sess-0001"))
+    events = await collect(
+        runtime,
+        InvocationRequest(agent="echoer", messages=[{"role": "user", "content": "hello"}], session_id="sess-0001"),
+    )
 
     kinds = [type(e).__name__ for e in events]
     collapsed = [k for i, k in enumerate(kinds) if i == 0 or k != kinds[i - 1]]
@@ -106,21 +113,25 @@ async def test_stream_tool_call_then_answer(runtime: Runtime) -> None:
 
 async def test_default_agent_and_generated_session_id(runtime: Runtime) -> None:
     fakes.script(fakes.text("ok"))
-    events = await collect(runtime, InvocationRequest(prompt="hi"))
+    events = await collect(runtime, InvocationRequest(messages=[{"role": "user", "content": "hi"}]))
     start = events[0]
     assert isinstance(start, StartEvent) and start.agent == "echoer" and len(start.session_id) == 36
 
 
 async def test_header_session_id_wins(runtime: Runtime) -> None:
     fakes.script(fakes.text("ok"))
-    events = await collect(runtime, InvocationRequest(prompt="hi", session_id="payload-sid"), session_id="header-sid")
+    events = await collect(
+        runtime,
+        InvocationRequest(messages=[{"role": "user", "content": "hi"}], session_id="payload-sid"),
+        session_id="header-sid",
+    )
     assert isinstance(events[0], StartEvent) and events[0].session_id == "header-sid"
 
 
 async def test_session_history_is_restored_between_invocations(runtime: Runtime) -> None:
     fakes.script(fakes.text("first"), fakes.text("second"))
-    await collect(runtime, InvocationRequest(prompt="one", session_id="persist-1"))
-    await collect(runtime, InvocationRequest(prompt="two", session_id="persist-1"))
+    await collect(runtime, InvocationRequest(messages=[{"role": "user", "content": "one"}], session_id="persist-1"))
+    await collect(runtime, InvocationRequest(messages=[{"role": "user", "content": "two"}], session_id="persist-1"))
 
     second_call_history = fakes.seen_messages()[1]
     texts = [block.get("text") for m in second_call_history for block in m["content"]]
@@ -129,31 +140,37 @@ async def test_session_history_is_restored_between_invocations(runtime: Runtime)
 
 async def test_unknown_agent_raises_before_streaming(runtime: Runtime) -> None:
     with pytest.raises(UnknownAgentError):
-        await collect(runtime, InvocationRequest(agent="ghost", prompt="hi"))
+        await collect(runtime, InvocationRequest(agent="ghost", messages=[{"role": "user", "content": "hi"}]))
 
 
 async def test_same_session_is_rejected_while_running(runtime: Runtime) -> None:
     fakes.script(fakes.text("slow"), fakes.text("second"))
-    first = runtime.invoker.stream(InvocationRequest(prompt="hi", session_id="busy-1"))
+    first = runtime.invoker.stream(InvocationRequest(messages=[{"role": "user", "content": "hi"}], session_id="busy-1"))
     assert isinstance(await anext(first), StartEvent)
     with pytest.raises(SessionBusyError):
-        await anext(runtime.invoker.stream(InvocationRequest(prompt="again", session_id="busy-1")))
+        await anext(
+            runtime.invoker.stream(
+                InvocationRequest(messages=[{"role": "user", "content": "again"}], session_id="busy-1")
+            )
+        )
     await first.aclose()
     # 放棄したストリームを閉じるとセッションは再び空く。
-    events = await collect(runtime, InvocationRequest(prompt="again", session_id="busy-1"))
+    events = await collect(
+        runtime, InvocationRequest(messages=[{"role": "user", "content": "again"}], session_id="busy-1")
+    )
     assert isinstance(events[-1], ResultEvent)
 
 
 async def test_model_failure_becomes_error_event(runtime: Runtime) -> None:
     fakes.script()  # 台本が空なので偽モデルは例外を投げる
-    events = await collect(runtime, InvocationRequest(prompt="hi"))
+    events = await collect(runtime, InvocationRequest(messages=[{"role": "user", "content": "hi"}]))
     assert isinstance(events[-1], ErrorEvent) and events[-1].error_type == "AssertionError"
     assert sum(isinstance(e, ErrorEvent) for e in events) == 1
 
 
 async def test_invoke_returns_result(runtime: Runtime) -> None:
     fakes.script(fakes.text("done"))
-    result = await runtime.invoker.invoke(InvocationRequest(prompt="hi"))
+    result = await runtime.invoker.invoke(InvocationRequest(messages=[{"role": "user", "content": "hi"}]))
     assert isinstance(result, ResultEvent) and result.text == "done"
 
 
@@ -163,7 +180,9 @@ async def test_timeout_cancels_and_reports_timeout(tmp_path: Path) -> None:
     fakes.script(fakes.text("a" * 20), fakes.text("never"))
     fakes.set_chunk_delay(0.25)
     try:
-        events = await collect(runtime, InvocationRequest(agent="slow", prompt="hi", session_id="t-1"))
+        events = await collect(
+            runtime, InvocationRequest(agent="slow", messages=[{"role": "user", "content": "hi"}], session_id="t-1")
+        )
     finally:
         fakes.set_chunk_delay(0.0)
     final = events[-1]
@@ -179,7 +198,7 @@ async def test_structured_output_has_its_own_stop_reason(tmp_path: Path) -> None
     runtime = Runtime.load(write_runtime(tmp_path))
     # Strands は構造化出力を、スキーマ名のツール呼び出しとしてモデルに求める。
     fakes.script(fakes.tool_use("Answer", {"answer": "42"}))
-    result = await runtime.invoker.invoke(InvocationRequest(agent="a", prompt="hi"))
+    result = await runtime.invoker.invoke(InvocationRequest(agent="a", messages=[{"role": "user", "content": "hi"}]))
     assert isinstance(result, ResultEvent)
     assert result.stop_reason == "structured_output" and result.structured_output == {"answer": "42"}
 
@@ -193,7 +212,10 @@ async def test_interrupt_and_resume(tmp_path: Path) -> None:
     runtime = Runtime.load(write_runtime(tmp_path))
     fakes.script(fakes.tool_use("dangerous", {"action": "deploy"}), fakes.text("deployed"))
 
-    first = await collect(runtime, InvocationRequest(agent="hitl", prompt="deploy it", session_id="hitl-1"))
+    first = await collect(
+        runtime,
+        InvocationRequest(agent="hitl", messages=[{"role": "user", "content": "deploy it"}], session_id="hitl-1"),
+    )
     interrupt = next(e for e in first if isinstance(e, InterruptEvent))
     result = first[-1]
     assert isinstance(result, ResultEvent) and result.stop_reason == "interrupt"
@@ -201,7 +223,12 @@ async def test_interrupt_and_resume(tmp_path: Path) -> None:
 
     resume = InvocationRequest(
         agent="hitl",
-        prompt=[{"interruptResponse": {"interruptId": interrupt.interrupts[0].id, "response": "yes"}}],
+        messages=[
+            {
+                "role": "user",
+                "content": [{"interruptResponse": {"interruptId": interrupt.interrupts[0].id, "response": "yes"}}],
+            }
+        ],
         session_id="hitl-1",
     )
     second = await collect(runtime, resume)
@@ -216,7 +243,9 @@ async def test_context_injection_adds_datetime_and_actor(tmp_path: Path) -> None
     )
     runtime = Runtime.load(write_runtime(tmp_path))
     fakes.script(fakes.text("ok"))
-    await collect(runtime, InvocationRequest(agent="ctx", prompt="hi", actor_id="user-42"))
+    await collect(
+        runtime, InvocationRequest(agent="ctx", messages=[{"role": "user", "content": "hi"}], actor_id="user-42")
+    )
     seen = str(fakes.seen_messages()[0])
     assert "<current_datetime>" in seen and "+09:00" in seen and "<actor_id>user-42</actor_id>" in seen
 
@@ -232,7 +261,7 @@ async def test_context_injection_resolves_file_references_relative_to_the_agent(
     )
     runtime = Runtime.load(write_runtime(tmp_path))
     fakes.script(fakes.text("ok"))
-    await collect(runtime, InvocationRequest(agent="ctx", prompt="hi"))
+    await collect(runtime, InvocationRequest(agent="ctx", messages=[{"role": "user", "content": "hi"}]))
     assert "<turn>1</turn>" in str(fakes.seen_messages()[0])
 
 
@@ -244,7 +273,9 @@ async def test_usage_is_aggregated_across_subagents(tmp_path: Path) -> None:
     # parent が child を呼び（child 内でモデル呼び出し 1 回）、その後に回答する。計 3 回のモデル呼び出し、各 15 トークン。
     fakes.script(fakes.tool_use("child", {"input": "hello"}), fakes.text("child says hi"), fakes.text("done"))
 
-    result = await runtime.invoker.invoke(InvocationRequest(agent="parent", prompt="go", session_id="usage-1"))
+    result = await runtime.invoker.invoke(
+        InvocationRequest(agent="parent", messages=[{"role": "user", "content": "go"}], session_id="usage-1")
+    )
 
     assert isinstance(result, ResultEvent)
     assert result.metrics.total_tokens == 45 and result.metrics.input_tokens == 30
@@ -265,7 +296,9 @@ async def test_fallback_model_takes_over_when_primary_fails(tmp_path: Path) -> N
     runtime = Runtime.load(write_runtime(tmp_path))
     fakes.script(fakes.text("from the fallback"))
 
-    result = await runtime.invoker.invoke(InvocationRequest(agent="a", prompt="hi", session_id="fb-1"))
+    result = await runtime.invoker.invoke(
+        InvocationRequest(agent="a", messages=[{"role": "user", "content": "hi"}], session_id="fb-1")
+    )
 
     assert isinstance(result, ResultEvent), result
     assert result.text == "from the fallback"

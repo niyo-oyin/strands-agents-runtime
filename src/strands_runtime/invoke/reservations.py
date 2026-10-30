@@ -12,7 +12,7 @@ from pathlib import Path
 
 import psutil
 
-from strands_runtime.errors import SessionBusyError
+from strands_runtime.errors import SessionAccessError, SessionBusyError
 from strands_runtime.sqlite import Database
 
 
@@ -23,8 +23,21 @@ class SqliteReservations:
         self._db = Database(
             path,
             "CREATE TABLE IF NOT EXISTS reservations "
-            "(session TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL, created REAL NOT NULL)",
+            "(session TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL, created REAL NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS session_owners (session TEXT PRIMARY KEY, actor TEXT NOT NULL)",
         )
+
+    async def authorize_owner(self, session_id: str, actor_id: str | None, *, claim: bool) -> None:
+        def check(conn: sqlite3.Connection) -> None:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT actor FROM session_owners WHERE session = ?", (session_id,)).fetchone()
+            if row is not None and row[0] != actor_id:
+                raise SessionAccessError()
+            if row is None and claim:
+                assert actor_id is not None
+                conn.execute("INSERT INTO session_owners VALUES (?, ?)", (session_id, actor_id))
+
+        await self._db.call(check)
 
     @asynccontextmanager
     async def hold(self, session_id: str) -> AsyncIterator[None]:

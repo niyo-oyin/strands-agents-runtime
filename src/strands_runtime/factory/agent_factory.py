@@ -305,7 +305,7 @@ class AgentFactory:
         # ``session.id`` と ``user.id`` は可視化ツールがセッション・利用者のグルーピングに使う属性名。
         trace_attributes: dict[str, str] = {
             "session.id": session.session_id,
-            "user.id": session.actor_id,
+            **({"user.id": session.actor_id} if session.actor_id is not None else {}),
             "agent.name": d.name,
         }
 

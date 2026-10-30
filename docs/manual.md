@@ -19,7 +19,7 @@ uv sync --locked
 ```text
 uv run --env-file .env strands-runtime validate
 uv run --env-file .env strands-runtime list
-uv run --env-file .env strands-runtime run assistant "今日は何日？"
+uv run --env-file .env strands-runtime run assistant --messages '[{"role": "user", "content": "今日は何日？"}]'
 ```
 
 `validate` は定義・コード参照・スキルを検証し、モデルへの推論リクエストは送りません。`validate --mcp` は MCP サーバーへの接続も確認します。
@@ -75,8 +75,8 @@ params = {}
 ```text
 uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml list
 uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml validate --mcp
-uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run skilled "秋の俳句を作って" --json
-uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run mcp-user "7 と 8 を掛けて" --json
+uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run skilled --messages '[{"role": "user", "content": "秋の俳句を作って"}]' --json
+uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml run mcp-user --messages '[{"role": "user", "content": "7 と 8 を掛けて"}]' --json
 ```
 
 上の `run` のエージェント名とプロンプトを変えると、次の機能を確認できます。
@@ -129,12 +129,12 @@ from strands_runtime_client import HttpClient, new_session_id
 
 client = HttpClient("http://127.0.0.1:8080")
 sid = new_session_id()
-result = client.invoke("こんにちは", agent="assistant", session_id=sid)
+result = client.invoke(messages=[{"role": "user", "content": "こんにちは"}], agent="assistant", session_id=sid)
 print(result.text)
 ```
 
 同じ `session_id` を指定すると会話を続けられます。既定の付属設定は履歴をローカルに保存します。
-`prompt` の代わりに `messages` も使えます。セッションを指定するときは1件だけ渡してください。
+入力は `messages` に統一しています。セッションを指定するときは1件だけ渡してください。
 
 ```python
 result = client.invoke(
@@ -144,8 +144,9 @@ result = client.invoke(
 )
 ```
 
-`session_id` を省略すると `user` / `assistant` の会話全体を `messages` に渡せます。この場合、保存済み履歴は読み書きしません。
-`prompt` と `messages` の同時指定、空配列、セッション指定時の複数メッセージは通信前にエラーになります。
+`session_id` を省略すると会話全体を渡せます。既定では保存せず、`store=True` で新規会話として保存できます。
+`session_id` があれば既定で復元・保存し、`store=False` なら復元だけを行います。
+`prompt` は廃止しました。空配列、不正なrole、セッション指定時の複数メッセージは通信前にエラーになります。
 `model="openai/my-deployment"` で、定義と同じプロバイダーのモデルを今回だけ指定できます。接続先や認証設定は定義を引き継ぎます。
 システムプロンプトはエージェント定義で管理します。
 全履歴入力の例、モデル上書きの範囲、Graph / Swarm の制約は [クライアントの入力形式](../packages/client/README.md#messages-とモデル指定) を参照してください。
@@ -154,7 +155,7 @@ result = client.invoke(
 
 ```python
 result = client.invoke(
-    "要点をまとめて",
+    messages=[{"role": "user", "content": "要点をまとめて"}],
     max_output_tokens=2048,
     reasoning_effort="low",
     timeout_seconds=60,
@@ -218,6 +219,35 @@ uv run python scripts/dev.py synth       # AWS アカウントなしで CDK テ�
 `agent.toml` では `[session.history]` だけを上書きでき、省略時の `backend="inherit"` はランタイムの履歴設定を継承します。
 実行の排他方式はランタイム全体で共通です。
 `session.backend="none"` のときにエージェント定義から履歴を有効にする設定も拒否します。
+
+### 会話の保存と所有者
+
+保存と履歴の復元にはactorが必要です。
+リクエストの `actor_id` を優先し、省略時は `[session] default_actor_id` を使います。
+どちらもなければ、保存・復元・ジョブ操作は400です。単発の保存しない実行では省略できます。
+`anonymous` というactorは自動生成しません。
+
+```toml
+[session]
+backend = "local"
+default_actor_id = "local-user"  # 単一ユーザー向け
+
+[session.history]
+backend = "local"
+```
+
+共有サービスでは既定actorを設けず、認証済み情報からリクエストのactorを設定・検証します。
+actor_idを自己申告できるだけでは認証になりません。
+セッションの所有者は保存時に結び付けられ、別actorからの続行やジョブ観測・キャンセルは403です。
+通常の履歴はactorごとのキー空間に置き、所有者情報も保存します。
+AgentCore Memoryでは専用actor `strands-runtime-session-owners` に所有者のblobメタデータを置きます。このactor名は利用者のリクエストには使えません。
+既存データの自動移行は行いません。
+
+`store` は履歴への書き込みを制御し、読み込みは止めません。
+未指定なら、本文にsession_idがあれば保存、なければ保存しません。保存先noneで明示的なstore=trueは拒否します。
+AgentCore Memoryの長期記憶取得は `[session.history.retrieval]` の設定に従い、actorがあれば保存しない実行でも使えます。
+ログ・トレース・ジョブ記録・ツールの外部操作はstoreの対象外です。
+具体的な呼び出し例は [クライアントの説明](../packages/client/README.md#セッション保存所有者) を参照してください。
 
 ### 配置とバックエンドの選択
 

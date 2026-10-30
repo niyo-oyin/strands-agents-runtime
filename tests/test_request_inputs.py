@@ -31,13 +31,17 @@ async def test_messages_preserve_roles_and_decode_media_without_mutating_input(r
     assert request.model_dump() == original
 
 
-async def test_single_message_and_prompt_share_the_same_persisted_conversation(runtime):
+async def test_dict_and_typed_message_share_the_same_persisted_conversation(runtime):
     fakes.script(fakes.text("first answer"), fakes.text("second answer"), fakes.text("third answer"))
-    await runtime.invoker.invoke(InvocationRequest(prompt="first", session_id="conversation"))
+    await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "first"}], session_id="conversation")
+    )
     await runtime.invoker.invoke(
         InvocationRequest(messages=[Message(role="user", content="second")], session_id="conversation")
     )
-    result = await runtime.invoker.invoke(InvocationRequest(prompt="third", session_id="conversation"))
+    result = await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "third"}], session_id="conversation")
+    )
     assert isinstance(result, ResultEvent) and result.text == "third answer"
     assert [m["content"][0]["text"] for m in fakes.seen_messages()[-1]] == [
         "first",
@@ -50,7 +54,9 @@ async def test_single_message_and_prompt_share_the_same_persisted_conversation(r
 
 async def test_client_history_does_not_read_or_write_history_of_transport_session(runtime):
     fakes.script(fakes.text("saved answer"), fakes.text("transient answer"), fakes.text("continued"))
-    await runtime.invoker.invoke(InvocationRequest(prompt="saved question", session_id="transport"))
+    await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "saved question"}], session_id="transport")
+    )
     await runtime.invoker.invoke(
         InvocationRequest(
             messages=[
@@ -62,7 +68,9 @@ async def test_client_history_does_not_read_or_write_history_of_transport_sessio
         session_id="transport",
     )
     assert [m["content"][0]["text"] for m in fakes.seen_messages()[1]] == ["local question", "local answer", "next"]
-    await runtime.invoker.invoke(InvocationRequest(prompt="continue", session_id="transport"))
+    await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "continue"}], session_id="transport")
+    )
     assert [m["content"][0]["text"] for m in fakes.seen_messages()[2]] == ["saved question", "saved answer", "continue"]
 
 
@@ -73,7 +81,7 @@ async def test_client_history_does_not_read_or_write_history_of_transport_sessio
         {"messages": [{"role": "system", "content": "override"}]},
         {"messages": [{"role": "user", "content": "one"}], "prompt": "two"},
         {"session_id": "s", "messages": [{"role": "user", "content": "one"}, {"role": "assistant", "content": "two"}]},
-        {"prompt": "hi", "model": "missing-provider"},
+        {"messages": [{"role": "user", "content": "hi"}], "model": "missing-provider"},
         {},
     ],
 )
@@ -114,7 +122,10 @@ def test_http_rejects_model_override_for_module_before_execution(runtime, mode):
     from strands_runtime.server import create_app
 
     with TestClient(create_app(runtime)) as client:
-        response = client.post("/invocations", json={"prompt": "hi", "model": "openai/deployment", "mode": mode})
+        response = client.post(
+            "/invocations",
+            json={"messages": [{"role": "user", "content": "hi"}], "model": "openai/deployment", "mode": mode},
+        )
     assert response.status_code == 400
     assert "model.module" in response.json()["error"]
 
@@ -129,6 +140,8 @@ def test_http_rejects_model_provider_change_before_execution(tmp_path):
     write_agent(tmp_path / "agents", "a", model_table='[model]\nid = "openai/deployment"')
     runtime = Runtime.load(write_runtime(tmp_path, 'default_agent = "a"'))
     with TestClient(create_app(runtime)) as client:
-        response = client.post("/invocations", json={"prompt": "hi", "model": "openai-chat/other"})
+        response = client.post(
+            "/invocations", json={"messages": [{"role": "user", "content": "hi"}], "model": "openai-chat/other"}
+        )
     assert response.status_code == 400
     assert "same provider" in response.json()["error"]

@@ -8,6 +8,7 @@ default_agent = "assistant"
 default_id = "bedrock/global.anthropic.claude-opus-5"
 
 [session]
+default_actor_id = "local-user"  # 単一ユーザー向け。共有サービスではリクエストでactor_idを指定する
 backend = "local"
 
 [session.history]

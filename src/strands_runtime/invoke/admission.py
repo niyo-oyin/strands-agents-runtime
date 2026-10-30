@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 
 from strands_runtime.definitions.schema import ExecutionSection
-from strands_runtime.errors import CapacityError, SessionBusyError
+from strands_runtime.errors import CapacityError, SessionAccessError, SessionBusyError
 from strands_runtime.invoke.reservations import SqliteReservations
 from strands_runtime.invoke.shared_store import SharedStore
 
@@ -29,9 +29,22 @@ class AdmissionController:
         self._session_enabled = session_enabled
         self._slots = asyncio.Semaphore(config.max_concurrent)
         self._sessions: set[str] = set()
+        self._owners: dict[str, str] = {}
         self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reservations = shared_store or (SqliteReservations(sqlite_path) if sqlite_path is not None else None)
+
+    async def authorize_owner(self, session_id: str, actor_id: str | None, *, claim: bool) -> None:
+        if not self._session_enabled:
+            return
+        if self._reservations is not None:
+            await self._reservations.authorize_owner(session_id, actor_id, claim=claim)
+        else:
+            if session_id in self._owners and self._owners[session_id] != actor_id:
+                raise SessionAccessError()
+            if claim:
+                assert actor_id is not None
+                self._owners[session_id] = actor_id
 
     @asynccontextmanager
     async def acquire(self, session_id: str) -> AsyncIterator[None]:

@@ -79,7 +79,7 @@
 │   ローカルプログラム / Lambda / 他エージェント                       │
 │   strands_runtime_client.{HttpClient, AgentCoreClient}              │
 └───────────────┬─────────────────────────────────────────────────────┘
-                │ JSON ペイロード（agent, prompt, session_id, ...）
+                │ JSON ペイロード（agent, messages, session_id, ...）
                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ サーバー層  strands_runtime.server                                   │
@@ -450,7 +450,7 @@ def build(self, d: AgentDefinition, session: SessionContext) -> Agent:
 | `none` | `session_manager=None` | ステートレスなワンショット呼び出し |
 
 - 定義側の `[session.history]` は `backend = "inherit"`（既定）か、上記のいずれかで上書きできる。
-- `agentcore_memory` は `actor_id` が必須なので、ペイロードの `actor_id`（省略時は `"anonymous"`）を使う。
+- `agentcore_memory` は `actor_id` が必須なので、ペイロードの `actor_id`（省略時は `[session] default_actor_id`、両方なければ保存・復元は拒否）を使う。
 - AgentCore の microVM はセッションに紐づくが、アイドルタイムアウトで破棄されるため、**プロセス内メモリをセッション状態の正とは見なさない**。会話を継続する場合は履歴保存を明示するか、クライアントから `messages` を渡す。
 
 ### 6.2 長期記憶
@@ -479,7 +479,7 @@ AgentCore はセッション ID を 33 文字以上に制約するため、ク�
 ```json
 {
   "agent": "support-bot",
-  "prompt": "注文 #1234 の状況を教えて",
+  "messages": [{"role": "user", "content": "注文 #1234 の状況を教えて"}],
   "session_id": "0d1b2b3a-....",
   "actor_id": "user-42",
   "stream": true,
@@ -490,9 +490,10 @@ AgentCore はセッション ID を 33 文字以上に制約するため、ク�
 | フィールド | 型 | 既定 | 説明 |
 |---|---|---|---|
 | `agent` | str | `runtime.default_agent` | エージェント定義名 |
-| `prompt` | str または content block の配列 | 必須 | Strands の `AgentInput` と同じ。画像などのマルチモーダル入力は配列形式で渡す |
+| `messages` | list | 実行時必須 | user / assistantの配列。session_id指定時は1件のみ |
+| `store` | bool | session_id指定時true、それ以外false | 会話履歴・状態への書き込み。falseでも既存履歴・長期記憶は取得できる |
 | `session_id` | str | なし | [§6.3](#63-セッション-id-の解決) |
-| `actor_id` | str | `"anonymous"` | 利用者識別子。メモリの名前空間とトレースの `user.id` に使う |
+| `actor_id` | str | session.default_actor_id | 会話・ジョブの所有者。保存・復元・ジョブ操作で必須。別actorのアクセスは403 |
 | `stream` | bool | `true` | `false` で最終結果だけを JSON で返す |
 | `invocation_state` | object | `{}` | ツールに渡す任意のコンテキスト（`ToolContext.invocation_state`）。保存されない |
 | `include_reasoning` | bool | `false` | モデルの推論差分を `reasoning` イベントとして流す（推論モデルでは量が多いため既定は無効） |
@@ -502,11 +503,11 @@ AgentCore はセッション ID を 33 文字以上に制約するため、ク�
 | `job_id` | str | セッションの最新ジョブ | `status` / `follow` / `result` / `cancel` の対象 |
 | `after` | int | `0` | `follow` の再生開始位置（この `seq` の次から） |
 
-`prompt` に content block の配列を渡す場合、`image` / `document` / `video` の `source.bytes` は base64 文字列で送る。ランタイムが bytes に復号して Strands に渡す。
-中断（`interrupt`）した会話は、同じ `session_id` で `prompt = [{"interruptResponse": {"interruptId": "...", "response": ...}}]` を送ると再開する。
+messagesの `content` にblock配列を渡す場合、`image` / `document` / `video` の `source.bytes` は base64 文字列で送る。ランタイムが bytes に復号して Strands に渡す。
+中断（`interrupt`）した会話は、同じ `session_id` で userメッセージの `content = [{"interruptResponse": {"interruptId": "...", "response": ...}}]` を送ると再開する。
 
-ペイロードの `system_prompt` や `model` の上書きは**許可しない**。
-エージェントの振る舞いは定義ファイルで確定させ、クライアントはそれを選ぶだけとする。
+`system_prompt` の上書きは許可しない。モデルと生成条件の上書きは [クライアントのREADME](../packages/client/README.md) を参照。
+履歴はactorごとに分離し、保存時にsessionとの所有関係を保持する。store=falseでは今回の変更を一時領域に置き、永続保存しない。
 
 ### 7.2 ストリーミングレスポンス（SSE）
 
@@ -583,7 +584,7 @@ Strands はエージェントオブジェクト単位でしか使用量を持た
 | `mode` | 役割 | 応答 |
 |---|---|---|
 | `run`（既定） | 同期実行。[§7.1](#71-リクエストpost-invocations)〜[§7.3](#73-非ストリーミングレスポンス) のとおり | SSE または JSON |
-| `job` | ジョブを受け付けて即座に返る。`prompt` と `agent`、`actor_id`、`invocation_state` は `run` と同じ意味を持つ | JSON の `job` イベント（受付直後の記録） |
+| `job` | ジョブを受け付けて即座に返る。`messages` と `agent`、`actor_id`、`invocation_state` は `run` と同じ意味を持つ | JSON の `job` イベント（受付直後の記録） |
 | `status` | ジョブの現在の記録 | JSON の `job` イベント |
 | `follow` | ジャーナルを `after` の次の `seq` から再生し、実行中ならそのまま終端まで追従する | SSE。終端イベント（`result` または `error`）で閉じる |
 | `result` | 終端イベントだけを取り出す | 終端なら `result` または `error` の JSON。実行中なら `job` イベント（`state` で判別する） |
@@ -619,7 +620,7 @@ Strands はエージェントオブジェクト単位でしか使用量を持た
 ```json
 {
   "type": "job",
-  "job_id": "6f1c...", "session_id": "0d1b...", "agent": "researcher",
+  "job_id": "6f1c...", "session_id": "0d1b...", "actor_id": "user-42", "agent": "researcher",
   "state": "running",
   "accepted_at": "2026-10-23T09:00:00Z", "updated_at": "2026-10-23T09:12:30Z", "finished_at": null,
   "seq": 17,
@@ -823,7 +824,7 @@ repetitive_handoff_min_unique_agents = 3    # 異なるエージェントが M �
 - ノードのエージェントは `subagents` と同じく `persist=False`（`SessionManager` なし）で組み立て、`Agent(name=<ノード ID>)` にする。Swarm はノード ID に `agent.name` を使い、`handoff_to_agent` ツールを `Agent` インスタンスに注入するので、ノードごとに専用のインスタンスを作る（リクエストごとの構築は [ADR-5](#adr-5-agent-はリクエストごとに構築し重い資源はプロセス内でキャッシュする) と同じ）。
 - 使用量の集計フック（`UsageCollector`）は全ノードに付け、`result.metrics.agents` にノード単位の内訳を出す。キーはノード ID。
 - オーケストレーターの `id` は定義名。入れ子（graph の中の graph / swarm）は `"<親の定義名>--<ノード ID>"` で、セッション内で一意にする（Strands の既定 `default_graph` のままだとスナップショットのキーが衝突する）。
-- `[session.history]` が `none` 以外なら、オーケストレーターに `SnapshotSessionManager(session_id, storage=...)` を付ける。保存先のキーは `session/<session_id>/scopes/multiAgent/<id>/`。`agentcore_memory` バックエンドはオーケストレーターの状態を保存できない（`Storage` ではない）ので、graph / swarm の `[session.history]` では `local` / `s3` / `dynamodb` / `cosmos` / `none` だけを許す。
+- `[session.history]` が `none` 以外なら、オーケストレーターに `SnapshotSessionManager(session_id, storage=...)` を付ける。保存先のキーは `actors/<actor_idのSHA-256>/session/<session_id>/scopes/multiAgent/<id>/`。`agentcore_memory` バックエンドはオーケストレーターの状態を保存できない（`Storage` ではない）ので、graph / swarm の `[session.history]` では `local` / `s3` / `dynamodb` / `cosmos` / `none` だけを許す。
 - `wait_for = "all"` のノードには、入ってくるエッジすべてに「元ノードが `completed_nodes` に含まれる」ことを確かめる合成条件を付ける。
 - 入れ子の深さは `subagents` と同じ `runtime.max_subagent_depth` で制限する。
 
@@ -831,7 +832,7 @@ repetitive_handoff_min_unique_agents = 3    # 異なるエージェントが M �
 
 **呼び出し 1 回 = ワークフロー 1 回**。Graph / Swarm には会話の継続がない。ノードのエージェントは呼び出しごとに新しく作られ、履歴は残らない（Strands の設計どおり）。セッションの役割は次の 2 つに限る。
 
-1. **HITL の再開**: ノードのツールが `interrupt` で止まると、オーケストレーターは進捗（完了したノード、中断したノードとその会話）をスナップショットに保存し、`result.stop_reason = "interrupt"` で返る。同じ `session_id` に `prompt = [{"interruptResponse": ...}]` を送ると、中断したノードだけが再開し、完了済みのノードは再実行されない。`[session.history] backend = "none"` では再開できないので、`interrupt` が起きた時点で `error`（`InterruptNotResumable`）にする。
+1. **HITL の再開**: ノードのツールが `interrupt` で止まると、オーケストレーターは進捗（完了したノード、中断したノードとその会話）をスナップショットに保存し、`result.stop_reason = "interrupt"` で返る。同じ `session_id` に userメッセージの `content = [{"interruptResponse": ...}]` を送ると、中断したノードだけが再開し、完了済みのノードは再実行されない。`[session.history] backend = "none"` または `store=false` では今回の中断状態を保存できないので、`interrupt` が起きた時点で `error`（`InterruptNotResumable`）にする。
 2. **進捗の観測**: ジョブ（[§7.6](#76-長時間実行ジョブと進捗)）のジャーナルと `status` の `last_event` にノードの開始・終了が載る。
 
 完了済みのスナップショットが残っているセッションに新しいプロンプトを送ると、Strands は全ノードをリセットして最初から実行する（意図した挙動）。Swarm の再開は at-least-once で、ノードは重複実行され得る。
@@ -923,9 +924,9 @@ Strands が作るスパンは `invoke_graph` / `invoke_swarm`（`gen_ai.operatio
 
 ```bash
 uv run strands-runtime serve            # BedrockAgentCoreApp を 127.0.0.1:8080 で起動
-uv run strands-runtime run support-bot "こんにちは"   # サーバーを立てずに 1 回実行（開発用）
+uv run strands-runtime run support-bot --messages '[{"role": "user", "content": "こんにちは"}]'   # サーバーを立てずに 1 回実行（開発用）
 curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
-     -d '{"agent":"support-bot","prompt":"こんにちは"}'
+     -d '{"agent":"support-bot","messages": [{"role": "user", "content": "こんにちは"}]}'
 ```
 
 `serve` は `BedrockAgentCoreApp.run()` を呼ぶだけであり、AgentCore 上と同じコードパスを通る。
@@ -1036,18 +1037,18 @@ from strands_runtime_client import AgentCoreClient, HttpClient
 client = AgentCoreClient(runtime_arn=os.environ["AGENT_RUNTIME_ARN"])   # boto3 bedrock-agentcore
 # client = HttpClient("http://localhost:8080")                           # ローカル / Docker
 
-for event in client.stream(agent="support-bot", prompt="...", session_id=sid, actor_id="user-42"):
+for event in client.stream(agent="support-bot", messages=[{"role": "user", "content": "..."}], session_id=sid, actor_id="user-42"):
     if event.type == "text":
         print(event.text, end="")
 
-result = client.invoke(agent="support-bot", prompt="...", session_id=sid)   # stream=false
+result = client.invoke(agent="support-bot", messages=[{"role": "user", "content": "..."}], session_id=sid, actor_id="user-42")
 print(result.text, result.structured_output)
 ```
 
-ジョブ（[§7.6](#76-長時間実行ジョブと進捗)）は `submit()` で投入し、返る `JobHandle` で操作する。別プロセスからは `client.job(session_id, job_id)` で同じハンドルを得る。
+ジョブ（[§7.6](#76-長時間実行ジョブと進捗)）は `submit()` で投入し、返る `JobHandle` で操作する。別プロセスからは `client.job(session_id, job_id, actor_id="user-42")` で同じハンドルを得る。
 
 ```python
-job = client.submit(agent="researcher", prompt="...", session_id=sid)   # mode="job"。すぐ返る
+job = client.submit(agent="researcher", messages=[{"role": "user", "content": "..."}], session_id=sid, actor_id="user-42")   # mode="job"。すぐ返る
 print(job.status().state)                                                # mode="status"
 for event in job.follow(after=last_seq):                                 # mode="follow"。切断したら after を進めて呼び直す
     last_seq = event.seq

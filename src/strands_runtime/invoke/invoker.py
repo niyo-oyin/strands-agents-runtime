@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -27,7 +28,8 @@ from strands_runtime.definitions.registry import Registry
 from strands_runtime.definitions.schema import AgentDefinition, GraphDefinition, RuntimeConfig, SwarmDefinition
 from strands_runtime.errors import InvalidRequestError, SessionBusyError, StrandsRuntimeError, UnknownAgentError
 from strands_runtime.factory import AgentFactory, SessionContext
-from strands_runtime.factory.sessions import ANONYMOUS_ACTOR, effective_history_spec
+from strands_runtime.factory.history_access import MEMORY_OWNER_ACTOR
+from strands_runtime.factory.sessions import effective_history_spec
 from strands_runtime.invoke.admission import AdmissionController
 from strands_runtime.invoke.shared_store import SharedStore
 from strands_runtime.invoke.usage import UsageCollector
@@ -67,7 +69,6 @@ class InvocationRequest(InvocationInput):
     """``POST /invocations`` が受け付ける JSON ペイロード。CLI とクライアントライブラリも同じ形を使う。"""
 
     agent: str | None = None
-    actor_id: str = ANONYMOUS_ACTOR
     stream: bool = True
     invocation_state: dict[str, Any] = Field(default_factory=dict)
     include_reasoning: bool = False
@@ -85,7 +86,7 @@ class InvocationRequest(InvocationInput):
     """``follow`` の再生開始位置。この ``seq`` の次のイベントから返す。"""
 
     @model_validator(mode="after")
-    def _prompt_when_executing(self) -> InvocationRequest:
+    def _messages_when_executing(self) -> InvocationRequest:
         if self.mode in EXECUTING_MODES:
             self.require_input()
         return self
@@ -110,7 +111,7 @@ class Invoker:
         )
         self._runs: dict[str, _Run] = {}
         # プロセスの外（ジョブのジャーナル）でセッションが使用中かを確かめる追加の判定。JobManager が差し込む。
-        self.busy_check: Callable[[str], Awaitable[bool]] | None = None
+        self.busy_check: Callable[[str, str | None], Awaitable[bool]] | None = None
 
     def resolve_agent_name(self, request: InvocationRequest) -> str:
         """公開中のエージェント名を返す。モデル指定と入力が定義に適合することも実行前に確認する。"""
@@ -129,6 +130,14 @@ class Invoker:
         ):
             raise InvalidRequestError("graph / swarm messages must contain a single user message")
         return name
+
+    def resolve_actor_id(self, actor_id: str | None, *, required: bool = False) -> str | None:
+        actor = actor_id if actor_id is not None else self._config.session.default_actor_id
+        if actor == MEMORY_OWNER_ACTOR:
+            raise InvalidRequestError("actor_id is reserved for runtime metadata")
+        if required and actor is None:
+            raise InvalidRequestError("actor_id is required; supply it or configure session.default_actor_id")
+        return actor
 
     async def stream(
         self,
@@ -151,14 +160,31 @@ class Invoker:
         ``timeout_cap`` は定義の ``limits.timeout_seconds`` とは別の上限で、短い方が効く。
         ``span_attributes`` は実行の ``invoke_agent`` スパンに足す属性（ジョブ ID など）。
         """
-        session = SessionContext(
-            session_id=session_id or request.session_id or str(uuid.uuid4()), actor_id=request.actor_id
-        )
         name = self.resolve_agent_name(request)
+        history = effective_history_spec(
+            self._factory.registry.get(name).definition.session.history, self._config.session.history
+        )
+        if request.store is True and history.backend == "none":
+            raise InvalidRequestError("store=true requires a configured history backend")
+        store = request.should_store and history.backend != "none"
+        restore = request.session_id is not None and history.backend != "none"
+        actor = self.resolve_actor_id(request.actor_id, required=store or restore or request.mode == "job")
+        session = SessionContext(
+            session_id=session_id or request.session_id or str(uuid.uuid4()),
+            actor_id=actor,
+            store=store,
+            restore=restore,
+        )
         terminal: ResultEvent | ErrorEvent | None = None
         async with self._admission.acquire(session.session_id):
-            if self.busy_check is not None and await self.busy_check(session.session_id):
+            await self._admission.authorize_owner(session.session_id, session.actor_id, claim=False)
+            if self.busy_check is not None and await self.busy_check(session.session_id, session.actor_id):
                 raise SessionBusyError(session.session_id)
+            owned = await self._factory.sessions.authorize(history, session)
+            session = replace(session, restore=session.restore and owned)
+            await self._admission.authorize_owner(
+                session.session_id, session.actor_id, claim=session.store or request.mode == "job"
+            )
             run = _Run(
                 request,
                 agent_name=name,
@@ -204,14 +230,12 @@ class Invoker:
         canceller: asyncio.Task[None] | None = None
         try:
             run.kind = definition.kind
-            # messages の全履歴入力では、AgentCore のルーティング用 ID があっても保存履歴を混ぜない。
-            persist = run.request.messages is None or run.request.session_id is not None
             executor = self._factory.build(
                 run.agent_name,
                 run.session,
                 hooks=[run.usage],
                 model=run.request.model,
-                persist=persist,
+                persist=True,
                 options=run.request,
             )
             prompt = decode_input(run.request)
@@ -235,7 +259,7 @@ class Invoker:
                 assert isinstance(definition, GraphDefinition | SwarmDefinition)
                 run.output_node = definition.output if isinstance(definition, GraphDefinition) else None
                 run.resumable = (
-                    persist
+                    run.session.store
                     and effective_history_spec(definition.session.history, self._config.session.history).backend
                     != "none"
                 )
@@ -695,7 +719,7 @@ def _record_usage_on_span(agent: str, session: SessionContext, metrics: Metrics,
         {
             "strands_runtime.agent": agent,
             "strands_runtime.session_id": session.session_id,
-            "strands_runtime.actor_id": session.actor_id,
+            **({"strands_runtime.actor_id": session.actor_id} if session.actor_id is not None else {}),
             "strands_runtime.usage.input_tokens": metrics.input_tokens,
             "strands_runtime.usage.output_tokens": metrics.output_tokens,
             "strands_runtime.usage.total_tokens": metrics.total_tokens,
@@ -710,9 +734,9 @@ def _record_usage_on_span(agent: str, session: SessionContext, metrics: Metrics,
 
 def decode_input(request: InvocationRequest) -> AgentInput:
     """会話のロールを保持し、文字列の content を SDK のテキストブロックに揃える。"""
-    if request.messages is None:
-        assert request.prompt is not None
-        return decode_prompt(request.prompt)
+    assert request.messages is not None
+    if len(request.messages) == 1 and request.messages[0].role == "user":
+        return decode_prompt(request.messages[0].content)
     return cast(
         AgentInput,
         [

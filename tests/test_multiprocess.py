@@ -211,20 +211,28 @@ def test_two_uvicorn_workers_share_reservations_and_job_observation(multiprocess
     # 新しい接続で両ワーカーへの配送を確認する。キューなしなので、満杯なら別接続で再試行する。
     pids = set()
     for _ in range(30):
-        response = httpx.post(url + "/invocations", json={"prompt": "pid", "stream": False}, timeout=5)
+        response = httpx.post(
+            url + "/invocations", json={"messages": [{"role": "user", "content": "pid"}], "stream": False}, timeout=5
+        )
         assert response.status_code == 200, response.text
         pids.add(json.loads(response.json()["text"])["pid"])
         if len(pids) == 2:
             break
     assert len(pids) == 2
     job = httpx.post(
-        url + "/invocations", json={"prompt": "hold", "mode": "job", "session_id": "shared"}, timeout=5
+        url + "/invocations",
+        json={"messages": [{"role": "user", "content": "hold"}], "mode": "job", "session_id": "shared"},
+        timeout=5,
     ).json()
     assert job["state"] == "running"
     try:
         for _ in range(8):
             assert httpx.get(url + "/ping", timeout=5).status_code == 200
-            duplicate = httpx.post(url + "/invocations", json={"prompt": "pid", "session_id": "shared"}, timeout=5)
+            duplicate = httpx.post(
+                url + "/invocations",
+                json={"messages": [{"role": "user", "content": "pid"}], "session_id": "shared"},
+                timeout=5,
+            )
             assert duplicate.status_code == 409
             status = httpx.post(url + "/invocations", json={"mode": "status", "session_id": "shared"}, timeout=5)
             assert status.json()["job_id"] == job["job_id"]

@@ -32,9 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="invoke an agent once without starting the server")
     run.add_argument("agent")
-    run.add_argument("prompt")
+    run.add_argument("--messages", required=True, help="JSON array of user/assistant messages")
+    run.add_argument("--store", action=argparse.BooleanOptionalAction, default=None)
     run.add_argument("--session-id")
-    run.add_argument("--actor-id", default="anonymous")
+    run.add_argument("--actor-id")
     run.add_argument("--json", action="store_true", help="print every event as a JSON line")
     run.add_argument("--state", help="invocation_state as a JSON object, passed to tools")
     run.add_argument("--reasoning", action="store_true", help="include the model's reasoning events")
@@ -185,7 +186,8 @@ async def _run(runtime: Runtime, args: argparse.Namespace) -> int:
     """サーバーを立てずに 1 回呼び出す。既定はテキストだけを表示し、``--json`` でイベントを 1 行ずつ出す。"""
     request = InvocationRequest(
         agent=args.agent,
-        prompt=args.prompt,
+        messages=json.loads(args.messages),
+        store=args.store,
         session_id=args.session_id,
         actor_id=args.actor_id,
         invocation_state=json.loads(args.state) if args.state else {},

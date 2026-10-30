@@ -31,18 +31,22 @@ queue_timeout_seconds = {timeout}
 async def test_concurrent_same_session_is_rejected_during_journal_read(runtime, monkeypatch):
     reading, release = asyncio.Event(), asyncio.Event()
 
-    async def slow_check(session_id):
+    async def slow_check(session_id, actor_id):
         reading.set()
         await release.wait()
         return False
 
     monkeypatch.setattr(runtime.invoker, "busy_check", slow_check)
-    first = runtime.invoker.stream(InvocationRequest(prompt="go", session_id="same"))
+    first = runtime.invoker.stream(InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="same"))
     started = asyncio.create_task(anext(first))
     try:
         await asyncio.wait_for(reading.wait(), 1)
         with pytest.raises(SessionBusyError):
-            await anext(runtime.invoker.stream(InvocationRequest(prompt="again", session_id="same")))
+            await anext(
+                runtime.invoker.stream(
+                    InvocationRequest(messages=[{"role": "user", "content": "again"}], session_id="same")
+                )
+            )
         release.set()
         assert isinstance(await started, StartEvent)
     finally:
@@ -121,14 +125,16 @@ async def test_shutdown_wakes_waiters_and_rejects_new_requests():
 
 @pytest.mark.parametrize("failure", [RuntimeError("storage failed"), asyncio.CancelledError()])
 async def test_failed_busy_check_releases_session(runtime, monkeypatch, failure):
-    async def fail(session_id):
+    async def fail(session_id, actor_id):
         raise failure
 
     monkeypatch.setattr(runtime.invoker, "busy_check", fail)
     with pytest.raises(type(failure)):
-        await anext(runtime.invoker.stream(InvocationRequest(prompt="go", session_id="s")))
+        await anext(
+            runtime.invoker.stream(InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="s"))
+        )
     monkeypatch.setattr(runtime.invoker, "busy_check", None)
-    stream = runtime.invoker.stream(InvocationRequest(prompt="go", session_id="s"))
+    stream = runtime.invoker.stream(InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="s"))
     assert isinstance(await anext(stream), StartEvent)
     await stream.aclose()
 
@@ -143,17 +149,25 @@ async def test_job_holds_capacity_until_finished_and_observation_bypasses_it(tmp
         yield ResultEvent(agent="a", session_id=run.session.session_id, text="ok", stop_reason="end_turn")
 
     monkeypatch.setattr(runtime.invoker, "_execute", execute)
-    job = await runtime.jobs.submit(InvocationRequest(prompt="go", session_id="job", mode="job"))
+    job = await runtime.jobs.submit(
+        InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="job", mode="job")
+    )
     await entered.wait()
     try:
         with pytest.raises(CapacityError):
-            await anext(runtime.invoker.stream(InvocationRequest(prompt="go", session_id="other")))
+            await anext(
+                runtime.invoker.stream(
+                    InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="other")
+                )
+            )
         assert (await runtime.jobs.status("job", job.job_id)).state == "running"
         assert (await runtime.jobs.cancel("job", job.job_id)).state == "cancelling"
     finally:
         release.set()
         await runtime.jobs.shutdown()
-    stream = runtime.invoker.stream(InvocationRequest(prompt="next", session_id="other"))
+    stream = runtime.invoker.stream(
+        InvocationRequest(messages=[{"role": "user", "content": "next"}], session_id="other")
+    )
     assert isinstance(await anext(stream), StartEvent)
     await stream.aclose()
 
@@ -171,11 +185,13 @@ async def test_terminal_event_follows_cleanup_and_release_without_closing_stream
             closed = True
 
     monkeypatch.setattr(runtime.invoker, "_execute", execute)
-    stream = runtime.invoker.stream(InvocationRequest(prompt="go", session_id="s"))
+    stream = runtime.invoker.stream(InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="s"))
     await anext(stream)
     assert isinstance(await anext(stream), ResultEvent)
     assert closed
-    next_stream = runtime.invoker.stream(InvocationRequest(prompt="go", session_id="s"))
+    next_stream = runtime.invoker.stream(
+        InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="s")
+    )
     assert isinstance(await anext(next_stream), StartEvent)
     await next_stream.aclose()
     await stream.aclose()

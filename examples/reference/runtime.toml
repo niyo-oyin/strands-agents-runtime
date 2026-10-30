@@ -20,6 +20,7 @@ max_subagent_depth = 3                   # 入れ子の深さの上限（1〜10�
 default_id = "bedrock/global.anthropic.claude-opus-5"
 
 [session]
+default_actor_id = "local-user"  # 単一ユーザー向け。共有サービスではリクエストでactor_idを指定する
 # 実行中・待機中の同一セッションを409にする。配置場所を示すenvironment設定はない。
 backend = "local"                        # none（既定）| local | dynamodb | cosmos | agentcore
 namespace = "default"                    # 外部DBでサービスを区別。全インスタンスで揃える

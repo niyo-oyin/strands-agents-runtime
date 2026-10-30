@@ -46,16 +46,17 @@ from strands_runtime_client import HttpClient, new_session_id
 
 with HttpClient("http://127.0.0.1:8080") as client:
     sid = new_session_id()
-    for event in client.stream("こんにちは", agent="assistant", session_id=sid):
+    for event in client.stream(messages=[{"role": "user", "content": "こんにちは"}], agent="assistant", session_id=sid):
         if event.type == "text":
             print(event.text, end="")
-    result = client.invoke("続きをお願い", agent="assistant", session_id=sid)
+    result = client.invoke(messages=[{"role": "user", "content": "続きをお願い"}], agent="assistant", session_id=sid)
     print(result.text, result.metrics.total_tokens)
 ```
 
 ## messages とモデル指定
 
-`invoke()`・`stream()`・`submit()` は、`prompt` または `messages` のどちらか一方を受け付けます。
+`invoke()`・`stream()`・`submit()` は、キーワード引数 `messages` を必須とします。
+`prompt` と位置引数による入力は受け付けません。
 `messages` の各要素は `role`（`user` / `assistant`）と `content` を持つ辞書です。
 `from strands_runtime_client import Message` で型付きのモデルも使えます。
 `content` は文字列、または Strands 形式の content block 配列です。画像等の `source.bytes` は base64 文字列で渡します。
@@ -126,7 +127,7 @@ JSON Schema の例:
 import json
 
 result = client.invoke(
-    "回答をJSONで返して",
+    messages=[{"role": "user", "content": "回答をJSONで返して"}],
     response_format={
         "type": "json_schema",
         "json_schema": {
@@ -161,7 +162,7 @@ class Answer(BaseModel):
     confidence: float
 
 
-result = client.invoke("回答と確信度を返して", response_format=Answer)
+result = client.invoke(messages=[{"role": "user", "content": "回答と確信度を返して"}], response_format=Answer)
 assert isinstance(result.parsed, Answer)
 print(result.parsed.answer, result.parsed.confidence)
 ```
@@ -190,34 +191,60 @@ strict出力では、既定値のあるフィールドもすべて必須にし�
 
 未対応の組み合わせはエラーになり、黙って無視しません。値の範囲や形式はクライアントが通信前に検証し、接続モデル固有の対応可否はサーバー・プロバイダー側で検証します。
 
-### セッションと履歴
+### セッション・保存・所有者
 
-| 指定 | 履歴の扱い |
+| 指定 | 動作 |
 |---|---|
-| `prompt` + `session_id` | 保存済み履歴へ今回の入力を追加 |
-| `messages` + `session_id` | **1メッセージだけ**を保存済み履歴へ追加 |
-| `messages` のみ | 配列全体を今回の会話として使用。保存済み履歴の読み書きは行わない |
-| `prompt` のみ | 新しいセッションで実行 |
+| `session_id` なし、`store=False`（省略時も同じ） | 渡したmessagesだけで会話し、履歴を保存しない |
+| `session_id` なし、`store=True` | 新しい会話として保存し、応答のsession_idを返す |
+| `session_id` あり、`store=True`（省略時も同じ） | 保存済み会話を復元し、今回のやり取りも保存 |
+| `session_id` あり、`store=False` | 保存済み会話を復元するが、今回のやり取りは保存しない |
 
-同じセッションで `prompt` と1件の `messages` を使い分けられます。
+保存にはサーバー側の履歴バックエンドが必要です。履歴がnoneの場合、明示的な `store=True` はエラーです。
+`session_id` 指定時のmessagesは1件に限り、2件以上・空配列・不正なroleは通信前にエラーになります。
+`stream()` も呼び出し時点で検証します。
+
+保存・履歴の復元・ジョブ操作には `actor_id` が必要です。
+省略できるのはサーバーの `[session] default_actor_id` が明示されている場合です。
+通常の履歴バックエンドもactorごとに保存領域を分け、所有者が異なる会話・ジョブへのアクセスは403で拒否します。
+同じ利用者の複数の会話には同じactorを渡し、別の会話には別のsession_idを使います。
+共有サービスでは認証済み情報からactorを設定・検証してください。このフィールド自体は認証機能ではありません。
 
 ```python
-sid = new_session_id()
-client.invoke("こんにちは", session_id=sid)
-client.invoke(messages=[{"role": "user", "content": "続きをお願い"}], session_id=sid)
+first = client.invoke(
+    messages=[{"role": "user", "content": "こんにちは"}],
+    actor_id="user-42",
+    store=True,
+)
+# 保存済み会話を参照するが、この質問と回答は会話に残さない。
+result = client.invoke(
+    messages=[{"role": "user", "content": "ここまでを要約して"}],
+    session_id=first.session_id,
+    actor_id="user-42",
+    store=False,
+)
 ```
 
-`session_id` 指定時に2件以上の `messages` を渡すと、通信前に `ValueError` になります。
-空の配列、`prompt` と `messages` の同時指定、両方の省略も通信前にエラーになります。
-`stream()` でも、イテレーターを読み始める前の呼び出し時点で検証します。
+`store` は会話履歴・エージェント状態への書き込みだけを制御します。
+AgentCore Memoryの長期記憶取得は `[session.history.retrieval]` で別に設定し、actorが指定されていれば `store=False` でも利用できます。
+actor未指定・既定actorなしの単発呼び出しは、匿名actorを作らず、Memoryの取得も行いません。
+ログ・トレース・ジョブのジャーナル、ツール自身の外部書き込みは別管理です。
 
-AgentCore が通信に必要な ID を自動生成しても、利用者が `session_id` を指定しなければ複数メッセージを送れます。
-HTTP API では、`messages` の履歴継続を JSON 本文の `session_id` で指定します。ヘッダーだけの ID は会話履歴の継続を意味しません。
-全履歴入力の応答にも実行識別用の `session_id` が返りますが、会話は保存されません。次の呼び出しも必要な履歴を送ってください。
-ジョブの状態・イベントは別途保存されるため、`submit(messages=...)` のハンドルで結果を取得できます。
-中断した会話を再開する場合は、最初から `session_id` を指定し、再開時に `prompt=[{"interruptResponse": {...}}]` を送ります。
+AgentCoreの配送用IDだけでは履歴復元を有効にしません。JSON本文の `session_id` が履歴継続の指定です。
+IDなし・保存なしでも応答には実行識別用のIDが返りますが、次の呼び出しには必要なmessagesを渡してください。
+ジョブのハンドルは受付時のactorを保持し、観測・キャンセルにも送ります。
+再取得は `client.job(session_id, job_id, actor_id="user-42")` の形です。
 
-Graph / Swarm は `prompt` または1件の `user` メッセージを受け付けます。複数メッセージの会話履歴には対応していません。
+Graph / Swarmは1件のuserメッセージだけを受け付けます。
+中断から再開するには最初の実行から保存を有効にし、同じactor・sessionで次のように送ります。
+
+```python
+result = client.invoke(
+    messages=[{"role": "user", "content": [{"interruptResponse": {"interruptId": interrupt_id, "response": "yes"}}]}],
+    session_id=sid,
+    actor_id="user-42",
+)
+```
 
 ## AgentCore で呼び出す
 
@@ -230,7 +257,7 @@ client = AgentCoreClient(
     runtime_arn=os.environ["AGENT_RUNTIME_ARN"],
     region_name="ap-northeast-1",
 )
-result = client.invoke("こんにちは", agent="assistant")
+result = client.invoke(messages=[{"role": "user", "content": "こんにちは"}], agent="assistant")
 print(result.text)
 ```
 
@@ -242,7 +269,7 @@ print(result.text)
 両クライアントで同じ操作を使えます。
 
 ```python
-job = client.submit("長い文章を要約して", agent="assistant")
+job = client.submit(messages=[{"role": "user", "content": "長い文章を要約して"}], agent="assistant", actor_id="user-42")
 print(job.session_id, job.job_id)
 for event in job.follow():
     print(event.seq, event.type)
@@ -250,7 +277,7 @@ result = job.result(wait=True)
 ```
 
 `job.status()` で状態を確認し、`job.cancel()` で停止を要求できます。
-別プロセスからは `client.job(session_id, job_id)` で操作を再開できます。
+別プロセスからは `client.job(session_id, job_id, actor_id="user-42")` で操作を再開できます。
 実行が失敗した場合、`invoke()` と `job.result()` は `InvocationError` を送出します。
 `stream()` では `error` イベントも含めて呼び出し側が処理します。
 

@@ -101,15 +101,23 @@ backend = "{config.backend}"
     )
     first, second = Runtime.load(path), Runtime.load(path)
     fakes.script(fakes.text("first"), fakes.text("second"))
-    assert (await first.invoker.invoke(InvocationRequest(prompt="one", session_id="conversation"))).text == "first"
-    assert (await second.invoker.invoke(InvocationRequest(prompt="two", session_id="conversation"))).text == "second"
+    assert (
+        await first.invoker.invoke(
+            InvocationRequest(messages=[{"role": "user", "content": "one"}], session_id="conversation")
+        )
+    ).text == "first"
+    assert (
+        await second.invoker.invoke(
+            InvocationRequest(messages=[{"role": "user", "content": "two"}], session_id="conversation")
+        )
+    ).text == "second"
     assert [block.get("text") for m in fakes.seen_messages()[1] for block in m["content"]] == ["one", "first", "two"]
 
     async def execute(run):
         yield ResultEvent(agent="a", session_id=run.session.session_id, text="x" * 500_000, stop_reason="end_turn")
 
     monkeypatch.setattr(first.invoker, "_execute", execute)
-    job = await first.jobs.submit(InvocationRequest(prompt="go", session_id="job"))
+    job = await first.jobs.submit(InvocationRequest(messages=[{"role": "user", "content": "go"}], session_id="job"))
     async with asyncio.timeout(10):
         async for _ in first.jobs.follow("job", job.job_id):
             pass
@@ -125,7 +133,12 @@ async def test_none_sessions_allow_parallel_same_id_without_history(tmp_path):
     fakes.set_chunk_delay(0.01)
     try:
         results = await asyncio.gather(
-            *(runtime.invoker.invoke(InvocationRequest(prompt=prompt, session_id="same")) for prompt in ("one", "two"))
+            *(
+                runtime.invoker.invoke(
+                    InvocationRequest(messages=[{"role": "user", "content": prompt}], session_id="same")
+                )
+                for prompt in ("one", "two")
+            )
         )
     finally:
         fakes.set_chunk_delay(0)

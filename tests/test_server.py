@@ -29,7 +29,10 @@ def test_ping(client: TestClient) -> None:
 def test_streaming_invocation_uses_header_session(client: TestClient) -> None:
     fakes.script(fakes.text("hello"))
     with client.stream(
-        "POST", "/invocations", json={"agent": "echoer", "prompt": "hi"}, headers={SESSION_HEADER: "hdr-session-000001"}
+        "POST",
+        "/invocations",
+        json={"agent": "echoer", "messages": [{"role": "user", "content": "hi"}]},
+        headers={SESSION_HEADER: "hdr-session-000001"},
     ) as response:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
@@ -42,20 +45,24 @@ def test_streaming_invocation_uses_header_session(client: TestClient) -> None:
 
 def test_non_streaming_invocation_returns_json_result(client: TestClient) -> None:
     fakes.script(fakes.text("sync answer"))
-    response = client.post("/invocations", json={"prompt": "hi", "stream": False, "session_id": "s-json"})
+    response = client.post(
+        "/invocations", json={"messages": [{"role": "user", "content": "hi"}], "stream": False, "session_id": "s-json"}
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["type"] == "result" and body["text"] == "sync answer" and body["agent"] == "echoer"
 
 
 def test_unknown_agent_is_404(client: TestClient) -> None:
-    response = client.post("/invocations", json={"agent": "ghost", "prompt": "hi"})
+    response = client.post("/invocations", json={"agent": "ghost", "messages": [{"role": "user", "content": "hi"}]})
     assert response.status_code == 404
     assert "ghost" in response.json()["error"]
 
 
 def test_invalid_payload_is_400(client: TestClient) -> None:
-    response = client.post("/invocations", json={"prompt": "hi", "system_prompt": "override"})
+    response = client.post(
+        "/invocations", json={"messages": [{"role": "user", "content": "hi"}], "system_prompt": "override"}
+    )
     assert response.status_code == 400
     assert "system_prompt" in response.json()["error"]
 
@@ -65,14 +72,14 @@ def test_invalid_payload_is_400(client: TestClient) -> None:
 
 def test_non_streaming_error_is_500(client: TestClient) -> None:
     fakes.script()
-    response = client.post("/invocations", json={"prompt": "hi", "stream": False})
+    response = client.post("/invocations", json={"messages": [{"role": "user", "content": "hi"}], "stream": False})
     assert response.status_code == 500
     assert response.json()["type"] == "error"
 
 
 def test_sse_frames_are_json_per_line(client: TestClient) -> None:
     fakes.script(fakes.text("x"))
-    with client.stream("POST", "/invocations", json={"prompt": "hi"}) as response:
+    with client.stream("POST", "/invocations", json={"messages": [{"role": "user", "content": "hi"}]}) as response:
         frames = [line for line in response.iter_lines() if line.startswith("data: ")]
     for frame in frames:
         json.loads(frame[len("data: ") :])
@@ -97,11 +104,14 @@ def test_log_file_receives_server_logs_and_warnings(tmp_path) -> None:
 
 
 def test_busy_session_is_409(client: TestClient, runtime: Runtime, monkeypatch) -> None:
-    async def busy(session_id):
+    async def busy(session_id, actor_id):
         return True
 
     monkeypatch.setattr(runtime.invoker, "busy_check", busy)
-    response = client.post("/invocations", json={"prompt": "hi", "session_id": "busy-session-000000000000000000000000"})
+    response = client.post(
+        "/invocations",
+        json={"messages": [{"role": "user", "content": "hi"}], "session_id": "busy-session-000000000000000000000000"},
+    )
     assert response.status_code == 409
     assert "in progress" in response.json()["error"]
 
@@ -118,7 +128,11 @@ def test_job_mode_lifecycle_over_http(job_client: TestClient) -> None:
     fakes.set_chunk_delay(0.02)
     sid = "http-job-000000000000000000000000000"
     try:
-        accepted = job_client.post("/invocations", json={"prompt": "go", "mode": "job"}, headers={SESSION_HEADER: sid})
+        accepted = job_client.post(
+            "/invocations",
+            json={"messages": [{"role": "user", "content": "go"}], "mode": "job"},
+            headers={SESSION_HEADER: sid},
+        )
         assert accepted.status_code == 200
         job = accepted.json()
         assert job["type"] == "job" and job["state"] == "running" and job["session_id"] == sid
@@ -126,7 +140,12 @@ def test_job_mode_lifecycle_over_http(job_client: TestClient) -> None:
 
         # 実行中は /ping が HealthyBusy、同じセッションの run は 409、status は通る。
         assert job_client.get("/ping").json()["status"] == "HealthyBusy"
-        assert job_client.post("/invocations", json={"prompt": "again", "session_id": sid}).status_code == 409
+        assert (
+            job_client.post(
+                "/invocations", json={"messages": [{"role": "user", "content": "again"}], "session_id": sid}
+            ).status_code
+            == 409
+        )
         status = job_client.post("/invocations", json={"mode": "status", "session_id": sid}).json()
         assert status["state"] == "running" and status["job_id"] == job["job_id"]
         pending = job_client.post("/invocations", json={"mode": "result", "session_id": sid}).json()
@@ -148,7 +167,10 @@ def test_job_mode_lifecycle_over_http(job_client: TestClient) -> None:
     assert job_client.get("/ping").json()["status"] == "Healthy"
     # セッションは空いたので、次の同期実行が通る。
     assert (
-        job_client.post("/invocations", json={"prompt": "again", "session_id": sid, "stream": False}).json()["text"]
+        job_client.post(
+            "/invocations",
+            json={"messages": [{"role": "user", "content": "again"}], "session_id": sid, "stream": False},
+        ).json()["text"]
         == "later"
     )
 

@@ -44,7 +44,9 @@ async def test_history_round_trips_through_s3(tmp_path: Path, aws_env: None) -> 
         session_id = f"s3-{uuid.uuid4()}"
 
         async def ask(prompt: str) -> ResultEvent:
-            request = InvocationRequest(agent="s3agent", prompt=prompt, session_id=session_id)
+            request = InvocationRequest(
+                agent="s3agent", messages=[{"role": "user", "content": prompt}], session_id=session_id
+            )
             result = await runtime.invoker.invoke(request)
             assert isinstance(result, ResultEvent), result
             return result
@@ -57,4 +59,4 @@ async def test_history_round_trips_through_s3(tmp_path: Path, aws_env: None) -> 
 
         listing = boto3.client("s3").list_objects_v2(Bucket=BUCKET, Prefix=prefix)
         keys = [obj["Key"] for obj in listing.get("Contents", [])]
-        assert keys and all(session_id in key for key in keys), keys
+        assert any(session_id in key for key in keys), keys

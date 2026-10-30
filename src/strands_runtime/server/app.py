@@ -25,6 +25,7 @@ from strands_runtime.errors import (
     CapacityError,
     InvalidRequestError,
     JobsDisabledError,
+    SessionAccessError,
     SessionBusyError,
     UnknownAgentError,
     UnknownJobError,
@@ -123,6 +124,10 @@ async def _execute(runtime: Runtime, request: InvocationRequest, header_session_
         result = await runtime.invoker.invoke(request, session_id=header_session_id)
     except SessionBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SessionAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except InvalidRequestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except CapacityError as exc:
         return JSONResponse({"error": str(exc)}, status_code=503, headers={"Retry-After": "1"})
     except JobsDisabledError as exc:
@@ -141,19 +146,23 @@ async def _observe_job(runtime: Runtime, request: InvocationRequest, header_sess
     try:
         match request.mode:
             case "status":
-                return dump_event(await jobs.status(session_id, request.job_id))
+                return dump_event(await jobs.status(session_id, request.job_id, actor_id=request.actor_id))
             case "result":
-                return dump_event(await jobs.result(session_id, request.job_id))
+                return dump_event(await jobs.result(session_id, request.job_id, actor_id=request.actor_id))
             case "cancel":
-                return dump_event(await jobs.cancel(session_id, request.job_id))
+                return dump_event(await jobs.cancel(session_id, request.job_id, actor_id=request.actor_id))
             case _:
-                stream = jobs.follow(session_id, request.job_id, after=request.after)
+                stream = jobs.follow(session_id, request.job_id, actor_id=request.actor_id, after=request.after)
                 # 記録の読み込み（UnknownJobError）は最初のイベントを取り出す前に終わるので、SSE の前に 404 を返せる。
                 # ``after`` が末尾以降で終端にも達していれば、フレームを出さずに閉じる。
                 first = await anext(stream, None)
                 return _sse(first, stream)
     except UnknownJobError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SessionAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except InvalidRequestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except JobsDisabledError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -152,7 +152,7 @@ async def test_generation_overrides_reach_provider_and_omission_restores_definit
     captured, _ = openai_requests
     runtime = configured_runtime(tmp_path, provider)
     request = InvocationRequest(
-        prompt="Answer as JSON",
+        messages=[{"role": "user", "content": "Answer as JSON"}],
         mode=mode,
         max_output_tokens=123,
         temperature=0,
@@ -170,7 +170,7 @@ async def test_generation_overrides_reach_provider_and_omission_restores_definit
     else:
         result = await runtime.invoker.invoke(request)
     assert isinstance(result, ResultEvent) and json.loads(result.text) == {"answer": "ok"}
-    await runtime.invoker.invoke(InvocationRequest(prompt="default"))
+    await runtime.invoker.invoke(InvocationRequest(messages=[{"role": "user", "content": "default"}]))
     override, default = captured
     assert override["temperature"] == 0 and override["top_p"] == 0.5
     assert default["temperature"] == 0.7 and default["top_p"] == 0.9
@@ -205,7 +205,9 @@ async def test_response_format_reaches_provider(tmp_path, openai_requests, provi
                 "additionalProperties": False,
             },
         }
-    result = await runtime.invoker.invoke(InvocationRequest(prompt="answer", response_format=fmt))
+    result = await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "answer"}], response_format=fmt)
+    )
     assert isinstance(result, ResultEvent) and json.loads(result.text) == {"answer": "ok"}
     assert result.stop_reason == "end_turn"
     body = captured[0]
@@ -233,7 +235,9 @@ def test_schema_defined_agent_rejects_response_format_before_execution(
     if format_type == "json_schema":
         fmt["json_schema"] = {"name": "Other", "schema": {"type": "object"}}
     with TestClient(create_app(runtime)) as client:
-        response = client.post("/invocations", json={"prompt": "go", "mode": mode, "response_format": fmt})
+        response = client.post(
+            "/invocations", json={"messages": [{"role": "user", "content": "go"}], "mode": mode, "response_format": fmt}
+        )
     assert response.status_code == 400
     assert "cannot override an agent with structured_output" in response.json()["error"]
     assert openai_requests[0] == []
@@ -259,7 +263,9 @@ async def test_forced_tool_choice_is_released_after_first_model_response(tmp_pat
     captured, reply_with_tool = openai_requests
     reply_with_tool.extend([True, False])
     runtime = configured_runtime(tmp_path, provider)
-    result = await runtime.invoker.invoke(InvocationRequest(prompt="say hello", tool_choice=choice))
+    result = await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "say hello"}], tool_choice=choice)
+    )
     assert isinstance(result, ResultEvent) and json.loads(result.text) == {"answer": "ok"}
     assert len(captured) == 2
     first = {"type": "function", "name": "echo"} if provider == "openai" and isinstance(choice, dict) else choice
@@ -284,7 +290,7 @@ async def test_execution_limits_inherit_and_cannot_exceed_definition(
     write_agent(tmp_path / "agents", "a", toml_extra=f"[limits]\n{limit_key} = {configured}")
     runtime = Runtime.load(write_runtime(tmp_path, 'default_agent = "a"'))
     fakes.script(*(fakes.tool_use("echo", {"text": "again"}, tool_use_id=f"t{i}") for i in range(3)))
-    request = InvocationRequest.model_validate({"prompt": "go", field: requested})
+    request = InvocationRequest.model_validate({"messages": [{"role": "user", "content": "go"}], field: requested})
     result = await runtime.invoker.invoke(request)
     assert isinstance(result, ResultEvent) and result.stop_reason == f"limit_{limit_key}"
     assert len(fakes.seen_messages()) == expected_calls
@@ -297,7 +303,9 @@ async def test_timeout_uses_request_or_existing_smaller_limit(tmp_path, requeste
     fakes.script(fakes.text("long answer" * 20))
     fakes.set_chunk_delay(0.01)
     try:
-        result = await runtime.invoker.invoke(InvocationRequest(prompt="go", timeout_seconds=requested))
+        result = await runtime.invoker.invoke(
+            InvocationRequest(messages=[{"role": "user", "content": "go"}], timeout_seconds=requested)
+        )
     finally:
         fakes.set_chunk_delay(0)
     assert isinstance(result, ResultEvent) and result.stop_reason == "timeout"
@@ -364,7 +372,7 @@ def test_unsupported_provider_options_are_reported_before_execution(tmp_path, op
     write_agent(tmp_path / "agents", "a", model_table='[model]\nid = "bedrock/test"')
     runtime = Runtime.load(write_runtime(tmp_path, 'default_agent = "a"'))
     with TestClient(create_app(runtime)) as client:
-        response = client.post("/invocations", json={"prompt": "go", **options})
+        response = client.post("/invocations", json={"messages": [{"role": "user", "content": "go"}], **options})
     assert response.status_code == 400 and "not supported" in response.json()["error"]
 
 
@@ -377,10 +385,18 @@ def test_raw_http_accepts_options_and_reports_invalid_numbers(tmp_path, openai_r
     with TestClient(create_app(runtime)) as client:
         response = client.post(
             "/invocations",
-            json={"prompt": "go", "stream": False, "temperature": 0, "max_output_tokens": 123, "max_turns": 1},
+            json={
+                "messages": [{"role": "user", "content": "go"}],
+                "stream": False,
+                "temperature": 0,
+                "max_output_tokens": 123,
+                "max_turns": 1,
+            },
         )
         assert response.status_code == 200 and response.json()["text"] == '{"answer":"ok"}'
-        invalid = client.post("/invocations", json={"prompt": "go", "max_total_tokens": -1})
+        invalid = client.post(
+            "/invocations", json={"messages": [{"role": "user", "content": "go"}], "max_total_tokens": -1}
+        )
     assert invalid.status_code == 400
     assert len(openai_requests[0]) == 1
     assert openai_requests[0][0]["max_output_tokens"] == 123
@@ -390,7 +406,9 @@ async def test_request_turn_limit_and_definition_output_budget_remain_independen
     write_agent(tmp_path / "agents", "a", toml_extra="[limits]\noutput_tokens = 1")
     runtime = Runtime.load(write_runtime(tmp_path, 'default_agent = "a"'))
     fakes.script(fakes.tool_use("echo", {"text": "again"}))
-    result = await runtime.invoker.invoke(InvocationRequest(prompt="go", max_turns=10, max_total_tokens=1000))
+    result = await runtime.invoker.invoke(
+        InvocationRequest(messages=[{"role": "user", "content": "go"}], max_turns=10, max_total_tokens=1000)
+    )
     assert isinstance(result, ResultEvent) and result.stop_reason == "limit_output_tokens"
 
 
@@ -415,7 +433,10 @@ async def test_forced_tool_choice_survives_a_hook_requested_retry(tmp_path, open
     reply_with_tool.extend([True, True, False])
     runtime = configured_runtime(tmp_path, "openai-chat")
     agent = runtime.factory.build(
-        "a", SessionContext("retry"), hooks=[RetryFirstResponse()], options=GenerationOptions(tool_choice="required")
+        "a",
+        SessionContext("retry", actor_id="test-user"),
+        hooks=[RetryFirstResponse()],
+        options=GenerationOptions(tool_choice="required"),
     )
     events = [event async for event in agent.stream_async("say hello")]
     assert events[-1]["result"].stop_reason == "end_turn"
