@@ -134,6 +134,41 @@ print(result.text)
 ```
 
 同じ `session_id` を指定すると会話を続けられます。既定の付属設定は履歴をローカルに保存します。
+`prompt` の代わりに `messages` も使えます。セッションを指定するときは1件だけ渡してください。
+
+```python
+result = client.invoke(
+    messages=[{"role": "user", "content": "続きを教えて"}],
+    agent="assistant",
+    session_id=sid,
+)
+```
+
+`session_id` を省略すると `user` / `assistant` の会話全体を `messages` に渡せます。この場合、保存済み履歴は読み書きしません。
+`prompt` と `messages` の同時指定、空配列、セッション指定時の複数メッセージは通信前にエラーになります。
+`model="openai/my-deployment"` で、定義と同じプロバイダーのモデルを今回だけ指定できます。接続先や認証設定は定義を引き継ぎます。
+システムプロンプトはエージェント定義で管理します。
+全履歴入力の例、モデル上書きの範囲、Graph / Swarm の制約は [クライアントの入力形式](../packages/client/README.md#messages-とモデル指定) を参照してください。
+
+生成条件や実行上限もリクエストで指定できます。省略した項目はエージェント定義やランタイムの既定値を使います。
+
+```python
+result = client.invoke(
+    "要点をまとめて",
+    max_output_tokens=2048,
+    reasoning_effort="low",
+    timeout_seconds=60,
+    max_turns=5,
+    max_total_tokens=20000,
+)
+```
+
+`temperature`・`top_p`・`response_format`・`tool_choice` も指定できます。
+`response_format=Answer` のようにPydanticモデルクラスを渡すと、正常完了時の検証済み結果を `result.parsed` で取得できます。
+スキーマを指定済みのエージェントでは `response_format` の上書きを拒否します。
+実行上限は定義側の上限との小さい方を使い、生成条件の指定は今回だけ適用します。
+プロバイダー別の対応範囲とJSON出力の例は [呼び出しごとのパラメータ](../packages/client/README.md#呼び出しごとのパラメータ) を参照してください。
+
 逐次出力には `client.stream(...)`、長時間の実行には `client.submit(...)` を使います。
 ジョブは `job.status()` で状態、`job.follow()` でイベント、`job.result(wait=True)` で結果を取得し、`job.cancel()` で停止を要求できます。
 ジョブには local または s3 の保存先が必要です。PowerShell・curl・ジョブの呼び出し例は [README の使い方](../README.md#使い方) を参照してください。

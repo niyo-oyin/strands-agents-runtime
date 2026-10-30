@@ -14,8 +14,75 @@ from strands_runtime.errors import DefinitionError
 from strands_runtime.factory.models import build_model
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.runtime import Runtime
+from strands_runtime_client import Message
 from strands_runtime_client.events import ResultEvent, TextEvent
 from tests.conftest import write_agent, write_runtime
+
+
+@pytest.mark.parametrize("mode", ["run", "job"])
+async def test_request_model_override_keeps_azure_connection_and_does_not_leak(
+    tmp_path, monkeypatch, mock_responses, mode
+):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
+    write_agent(
+        tmp_path / "agents",
+        "azure",
+        with_tool=False,
+        model_table="""
+[model]
+id = "openai/default-deployment"
+base_url = "https://resource.openai.azure.com/openai/v1/"
+api_key_env = "AZURE_OPENAI_API_KEY"
+fallbacks = ["openai/fallback-deployment"]
+effort = "low"
+[model.config]
+context_window_limit = 32000
+""",
+    )
+    runtime = Runtime.load(write_runtime(tmp_path, 'default_agent = "azure"\n[session]\nbackend = "local"'))
+    request = InvocationRequest(
+        messages=[
+            Message(role="user", content="earlier"),
+            Message(role="assistant", content="answer"),
+            Message(role="user", content="hello"),
+        ],
+        model="openai/selected-deployment",
+        mode=mode,
+    )
+    if mode == "job":
+        accepted = await runtime.jobs.submit(request)
+        events = [event async for event in runtime.jobs.follow(accepted.session_id, accepted.job_id)]
+        result = events[-1]
+    else:
+        result = await runtime.invoker.invoke(request)
+    assert isinstance(result, ResultEvent) and result.text == "こんにちは"
+    await runtime.invoker.invoke(InvocationRequest(prompt="again"))
+    selected, default = mock_responses
+    assert json.loads(selected.content)["model"] == "selected-deployment"
+    assert json.loads(default.content)["model"] == "default-deployment"
+    assert json.loads(selected.content)["reasoning"]["effort"] == "low"
+    for req in mock_responses:
+        assert str(req.url) == "https://resource.openai.azure.com/openai/v1/responses"
+        assert req.headers["authorization"] == "Bearer azure-key"
+    assert runtime.registry.get("azure").definition.model.id == "openai/default-deployment"
+
+
+def test_override_disables_fallbacks_and_config_model_id_only_for_this_call(monkeypatch):
+    from strands_runtime.factory.models import override_model
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    spec = ModelSpec(
+        id="openai/original",
+        fallbacks=["openai/backup"],
+        config={"model_id": "configured", "context_window_limit": 32000},
+    )
+    selected = build_model(override_model(spec, ModelDefaults(), "openai/selected"), ModelDefaults())
+    assert isinstance(selected, OpenAIResponsesModel)
+    assert selected.get_config()["model_id"] == "selected"
+    assert selected.get_config()["context_window_limit"] == 32000
+    original = build_model(spec, ModelDefaults())
+    assert isinstance(original, ModelRouter)
+    assert original.default_model.get_config()["model_id"] == "configured"
 
 
 def response_stream(text):

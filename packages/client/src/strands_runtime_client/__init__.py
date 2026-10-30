@@ -3,5 +3,6 @@
 from strands_runtime_client.agentcore import AgentCoreClient
 from strands_runtime_client.base import AgentClient, InvocationError, JobHandle, new_session_id
 from strands_runtime_client.http import HttpClient
+from strands_runtime_client.inputs import Message
 
-__all__ = ["AgentClient", "AgentCoreClient", "HttpClient", "InvocationError", "JobHandle", "new_session_id"]
+__all__ = ["AgentClient", "AgentCoreClient", "HttpClient", "InvocationError", "JobHandle", "Message", "new_session_id"]

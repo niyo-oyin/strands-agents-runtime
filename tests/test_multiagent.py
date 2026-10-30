@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from strands_runtime.errors import DefinitionError
+from strands_runtime.errors import DefinitionError, InvalidRequestError
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.runtime import Runtime
+from strands_runtime_client import Message
 from strands_runtime_client.events import (
     ErrorEvent,
     HandoffEvent,
@@ -59,6 +60,31 @@ def pipeline(tmp_path: Path, *, extra: str = "") -> Runtime:
         """,
     )
     return Runtime.load(write_runtime(tmp_path, 'default_agent = "flow"'))
+
+
+async def test_graph_accepts_single_user_message(tmp_path):
+    runtime = pipeline(tmp_path)
+    fakes.script(fakes.text("plan"), fakes.text("draft"))
+    result = await runtime.invoker.invoke(
+        InvocationRequest(messages=[Message(role="user", content="write something")], session_id="g-message")
+    )
+    assert isinstance(result, ResultEvent) and result.text == "draft"
+    assert fakes.seen_messages()[0][0]["content"] == [{"text": "write something"}]
+
+
+@pytest.mark.parametrize(
+    "options,match",
+    [
+        ({"prompt": "hi", "model": "openai/deployment"}, "model override"),
+        ({"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}, "single user"),
+        ({"messages": [{"role": "assistant", "content": "a"}]}, "single user"),
+    ],
+)
+async def test_graph_rejects_unsupported_inputs_before_start(tmp_path, options, match):
+    runtime = pipeline(tmp_path)
+    stream = runtime.invoker.stream(InvocationRequest.model_validate(options))
+    with pytest.raises(InvalidRequestError, match=match):
+        await anext(stream)
 
 
 async def test_graph_runs_nodes_in_order_and_reports_node_events(tmp_path: Path) -> None:

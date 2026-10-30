@@ -13,7 +13,7 @@ from contextlib import nullcontext
 from typing import Any, Literal, cast
 
 from opentelemetry import trace
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 from strands import Agent
 from strands.agent.agent_result import AgentResult
 from strands.multiagent import MultiAgentBase, MultiAgentResult, Status
@@ -24,7 +24,7 @@ from strands.types.agent import AgentInput, Limits
 
 from strands_runtime.definitions.registry import Registry
 from strands_runtime.definitions.schema import AgentDefinition, GraphDefinition, RuntimeConfig, SwarmDefinition
-from strands_runtime.errors import SessionBusyError, StrandsRuntimeError, UnknownAgentError
+from strands_runtime.errors import InvalidRequestError, SessionBusyError, StrandsRuntimeError, UnknownAgentError
 from strands_runtime.factory import AgentFactory, SessionContext
 from strands_runtime.factory.sessions import ANONYMOUS_ACTOR, effective_session_spec
 from strands_runtime.invoke.usage import UsageCollector
@@ -45,6 +45,7 @@ from strands_runtime_client.events import (
     ToolResultEvent,
     ToolUseEvent,
 )
+from strands_runtime_client.inputs import InvocationInput
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +60,10 @@ Mode = Literal["run", "job", "status", "follow", "result", "cancel"]
 EXECUTING_MODES: frozenset[str] = frozenset({"run", "job"})
 
 
-class InvocationRequest(BaseModel):
+class InvocationRequest(InvocationInput):
     """``POST /invocations`` が受け付ける JSON ペイロード。CLI とクライアントライブラリも同じ形を使う。"""
 
-    model_config = ConfigDict(extra="forbid")
-
     agent: str | None = None
-    prompt: str | list[dict[str, Any]] | None = Field(default=None, min_length=1)
-    """文字列か、Strands の content block の配列。``mode`` が ``run`` / ``job`` のとき必須。
-    image / document / video ブロックの ``source.bytes`` は base64 文字列で渡す。
-    中断した会話は ``[{"interruptResponse": {"interruptId": ..., "response": ...}}]`` で再開する。"""
-    session_id: str | None = None
     actor_id: str = ANONYMOUS_ACTOR
     stream: bool = True
     invocation_state: dict[str, Any] = Field(default_factory=dict)
@@ -89,8 +83,8 @@ class InvocationRequest(BaseModel):
 
     @model_validator(mode="after")
     def _prompt_when_executing(self) -> InvocationRequest:
-        if self.mode in EXECUTING_MODES and self.prompt is None:
-            raise ValueError(f"prompt is required when mode is {self.mode!r}")
+        if self.mode in EXECUTING_MODES:
+            self.require_input()
         return self
 
 
@@ -104,11 +98,21 @@ class Invoker:
         self.busy_check: Callable[[str], Awaitable[bool]] | None = None
 
     def resolve_agent_name(self, request: InvocationRequest) -> str:
-        """ペイロードの ``agent``（なければ既定エージェント）を、公開中であることを確認したうえで返す。"""
+        """公開中のエージェント名を返す。モデル指定と入力が定義に適合することも実行前に確認する。"""
         name = request.agent or self._config.runtime.default_agent
         if name is None:
             raise UnknownAgentError("(none)", self._factory.registry.published)
-        self._factory.registry.get(name)  # 公開されていない名前なら UnknownAgentError
+        resolved = self._factory.resolve(name, model=request.model, options=request)
+        if not isinstance(resolved.definition, AgentDefinition) and (
+            request.max_turns is not None or request.max_total_tokens is not None
+        ):
+            raise InvalidRequestError("max_turns / max_total_tokens are only supported for kind = 'agent'")
+        if (
+            request.messages is not None
+            and not isinstance(resolved.definition, AgentDefinition)
+            and (len(request.messages) != 1 or request.messages[0].role != "user")
+        ):
+            raise InvalidRequestError("graph / swarm messages must contain a single user message")
         return name
 
     async def stream(
@@ -162,17 +166,34 @@ class Invoker:
     async def _execute(self, run: _Run) -> AsyncIterator[Any]:
         """Agent を組み立てて実行し、イベントを流す。タイムアウト・キャンセル・後始末もここで扱う。"""
         definition = self._factory.registry.get(run.agent_name).definition
-        timeout = _min_timeout(definition.limits.timeout_seconds if definition.limits else None, run.timeout_cap)
+        timeout = _min_timeout(
+            _min_timeout(definition.limits.timeout_seconds if definition.limits else None, run.request.timeout_seconds),
+            run.timeout_cap,
+        )
         inner: AsyncIterator[dict[str, Any]] | None = None
         canceller: asyncio.Task[None] | None = None
         try:
-            assert run.request.prompt is not None  # mode が run / job なら検証済み
             run.kind = definition.kind
-            executor = self._factory.build(run.agent_name, run.session, hooks=[run.usage])
-            prompt = decode_prompt(run.request.prompt)
+            # messages の全履歴入力では、AgentCore のルーティング用 ID があっても保存履歴を混ぜない。
+            persist = run.request.messages is None or run.request.session_id is not None
+            executor = self._factory.build(
+                run.agent_name,
+                run.session,
+                hooks=[run.usage],
+                model=run.request.model,
+                persist=persist,
+                options=run.request,
+            )
+            prompt = decode_input(run.request)
             if isinstance(executor, Agent):
                 assert isinstance(definition, AgentDefinition)
-                limits = definition.limits.to_limits() if definition.limits else None
+                limits = definition.limits.to_limits() if definition.limits else {}
+                for key, requested in (
+                    ("turns", run.request.max_turns),
+                    ("total_tokens", run.request.max_total_tokens),
+                ):
+                    if requested is not None:
+                        limits[key] = min(limits[key], requested) if key in limits else requested
                 inner = executor.stream_async(
                     prompt,
                     invocation_state=dict(run.request.invocation_state),
@@ -183,7 +204,12 @@ class Invoker:
                 # Graph / Swarm。cancel_signal も limits も受け取らないので、停止は各ノードの Agent.cancel() に流す。
                 assert isinstance(definition, GraphDefinition | SwarmDefinition)
                 run.output_node = definition.output if isinstance(definition, GraphDefinition) else None
-                run.resumable = effective_session_spec(definition.session, self._config.session).backend != "none"
+                run.resumable = (
+                    persist and effective_session_spec(definition.session, self._config.session).backend != "none"
+                )
+                if run.request.messages is not None:
+                    # オーケストレーターの入力は content block 配列。単一 user メッセージのみ受付時に許可する。
+                    prompt = decode_prompt(run.request.messages[0].content)
                 inner = executor.stream_async(cast(Any, prompt), invocation_state=dict(run.request.invocation_state))
                 canceller = asyncio.create_task(_propagate_cancel(run.cancel, executor))
             # タイムアウトは 2 段構え。
@@ -647,6 +673,25 @@ def _record_usage_on_span(agent: str, session: SessionContext, metrics: Metrics,
             "strands_runtime.tool_calls": metrics.tool_calls,
             **extra,
         }
+    )
+
+
+def decode_input(request: InvocationRequest) -> AgentInput:
+    """会話のロールを保持し、文字列の content を SDK のテキストブロックに揃える。"""
+    if request.messages is None:
+        assert request.prompt is not None
+        return decode_prompt(request.prompt)
+    return cast(
+        AgentInput,
+        [
+            {
+                "role": message.role,
+                "content": [{"text": message.content}]
+                if isinstance(message.content, str)
+                else [_decode_block(block) for block in message.content],
+            }
+            for message in request.messages
+        ],
     )
 
 

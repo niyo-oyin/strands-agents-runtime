@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,10 @@ from strands_runtime.definitions.schema import (
     SessionSpec,
     SwarmDefinition,
 )
-from strands_runtime.errors import DefinitionError
-from strands_runtime.factory.models import build_model
+from strands_runtime.errors import DefinitionError, InvalidRequestError
+from strands_runtime.factory.models import build_model, override_model
 from strands_runtime.factory.references import load_attribute, resolve_class
+from strands_runtime.factory.request_options import configure_tool_choice, validate_generation
 from strands_runtime.factory.sessions import SessionContext, SessionManagerFactory, effective_session_spec
 from strands_runtime.factory.tools import (
     MCPClientCache,
@@ -34,6 +36,7 @@ from strands_runtime.factory.tools import (
     build_skills,
     context_manager_option,
 )
+from strands_runtime_client.inputs import GenerationOptions
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +81,46 @@ class AgentFactory:
     def registry(self) -> Registry:
         return self._registry
 
+    def resolve(
+        self, name: str, *, model: str | None = None, options: GenerationOptions | None = None
+    ) -> ResolvedAgent:
+        """呼び出し単位のモデル指定を適用する。共有の定義とサブエージェントの設定は変更しない。"""
+        resolved = self._registry.get(name)
+        if model is None and (options is None or not options.generation_overrides()):
+            return resolved
+        definition = resolved.definition
+        if not isinstance(definition, AgentDefinition):
+            raise InvalidRequestError("model override / generation overrides are only supported for kind = 'agent'")
+        spec = override_model(definition.model, self._config.model, model) if model is not None else definition.model
+        updates: dict[str, Any] = {"model": spec}
+        if options is not None:
+            if definition.structured_output is not None:
+                if options.response_format is not None:
+                    raise InvalidRequestError("response_format cannot override an agent with structured_output")
+                if options.tool_choice is not None:
+                    raise InvalidRequestError("tool_choice conflicts with the agent's structured_output")
+            validate_generation(spec, self._config.model, options)
+        return replace(resolved, definition=definition.model_copy(update=updates))
+
     def build(
-        self, name: str, session: SessionContext, *, hooks: Sequence[HookProvider] = ()
+        self,
+        name: str,
+        session: SessionContext,
+        *,
+        hooks: Sequence[HookProvider] = (),
+        model: str | None = None,
+        persist: bool = True,
+        options: GenerationOptions | None = None,
     ) -> Agent | MultiAgentBase:
         """公開中の定義 ``name`` を ``session`` 用に組み立てる。``hooks`` はツリー内の全エージェントに付く。
 
         ``kind = "agent"`` なら ``Agent``、``graph`` / ``swarm`` なら Strands のオーケストレーターを返す。
         どちらも ``stream_async`` を持ち、Invoker はそれだけに依存する。
         """
-        resolved = self._registry.get(name)
-        return self._build(resolved, session, depth=0, persist=True, hooks=list(hooks), scope=resolved.name)
+        resolved = self.resolve(name, model=model, options=options)
+        return self._build(
+            resolved, session, depth=0, persist=persist, hooks=list(hooks), scope=resolved.name, options=options
+        )
 
     def _build(
         self,
@@ -99,6 +132,7 @@ class AgentFactory:
         hooks: list[HookProvider],
         scope: str,
         node_id: str | None = None,
+        options: GenerationOptions | None = None,
     ) -> Agent | MultiAgentBase:
         """種類で分岐する。``scope`` は入れ子のオーケストレーターの ID を一意にするための名前の連なり。"""
         if depth > self._config.runtime.max_subagent_depth:
@@ -108,7 +142,9 @@ class AgentFactory:
             return self._build_graph(resolved, d, session, depth=depth, persist=persist, hooks=hooks, scope=scope)
         if isinstance(d, SwarmDefinition):
             return self._build_swarm(resolved, d, session, depth=depth, persist=persist, hooks=hooks, scope=scope)
-        return self._build_agent(resolved, d, session, depth=depth, persist=persist, hooks=hooks, node_id=node_id)
+        return self._build_agent(
+            resolved, d, session, depth=depth, persist=persist, hooks=hooks, node_id=node_id, options=options
+        )
 
     def _node(
         self,
@@ -233,6 +269,7 @@ class AgentFactory:
         persist: bool,
         hooks: list[HookProvider],
         node_id: str | None,
+        options: GenerationOptions | None = None,
     ) -> Agent:
         """``persist=False`` はサブエージェントとノード用。
 
@@ -270,11 +307,12 @@ class AgentFactory:
             "agent.name": d.name,
         }
 
-        return Agent(
+        model = build_model(d.model, self._config.model, options)
+        agent = Agent(
             name=node_id or d.name,
             agent_id=node_id or d.name,
             description=d.description or None,
-            model=build_model(d.model, self._config.model),
+            model=model,
             system_prompt=resolved.system_prompt,
             tools=tools,
             plugins=plugins or None,
@@ -286,3 +324,6 @@ class AgentFactory:
             hooks=list(hooks) or None,
             trace_attributes=trace_attributes,
         )
+        if options is not None:
+            configure_tool_choice(agent, model, options)
+        return agent

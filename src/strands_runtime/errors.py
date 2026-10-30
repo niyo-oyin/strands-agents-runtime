@@ -7,6 +7,10 @@ class StrandsRuntimeError(Exception):
     """strands_runtime が送出する例外の基底。CLI はこれを捕まえて 1 行のエラー表示にする。"""
 
 
+class InvalidRequestError(StrandsRuntimeError):
+    """入力とエージェント定義の組み合わせが不正。サーバーは実行前に 400 を返す。"""
+
+
 class DefinitionError(StrandsRuntimeError):
     """エージェント定義または runtime.toml が不正。``source`` はファイルパスで、メッセージの先頭に付く。"""
 

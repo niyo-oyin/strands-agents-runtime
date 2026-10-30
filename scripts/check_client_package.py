@@ -33,11 +33,27 @@ if extra != "http":
         raise AssertionError("missing HTTP extra was not reported")
 else:
     import httpx
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
-        "type": "result", "agent": "assistant", "session_id": "s", "stop_reason": "end_turn", "text": "hello",
-    }))
+    import json
+    from pydantic import BaseModel
+    class Answer(BaseModel):
+        answer: str
+    def respond(request):
+        payload = json.loads(request.content)
+        assert payload["messages"] == [{"role": "user", "content": "hi"}]
+        assert payload["temperature"] == 0 and payload["max_output_tokens"] == 100
+        assert payload["timeout_seconds"] == 30 and payload["max_turns"] == 2
+        fmt = payload["response_format"]
+        assert fmt["type"] == "json_schema" and fmt["json_schema"]["strict"] is True
+        assert fmt["json_schema"]["schema"]["additionalProperties"] is False
+        return httpx.Response(200, json={
+            "type": "result", "agent": "assistant", "session_id": "s", "stop_reason": "end_turn",
+            "text": json.dumps({"answer": "hello"}),
+        })
+    transport = httpx.MockTransport(respond)
     with HttpClient("https://runtime.example", transport=transport) as client:
-        assert client.invoke("hi").text == "hello"
+        result = client.invoke(messages=[{"role": "user", "content": "hi"}], temperature=0,
+                               max_output_tokens=100, timeout_seconds=30, max_turns=2, response_format=Answer)
+        assert isinstance(result.parsed, Answer) and result.parsed.answer == "hello"
 if extra != "agentcore":
     try:
         AgentCoreClient("arn:unused")

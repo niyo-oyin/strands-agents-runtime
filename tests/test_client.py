@@ -66,6 +66,29 @@ def test_http_client_stream_and_invoke(http_client: HttpClient) -> None:
     assert result.text == "invoked" and result.session_id == sid
 
 
+def test_http_client_can_continue_prompt_session_with_one_message(http_client: HttpClient) -> None:
+    fakes.script(fakes.text("first answer"), fakes.text("second answer"))
+    sid = new_session_id()
+    http_client.invoke("first", session_id=sid)
+    result = http_client.invoke(messages=[{"role": "user", "content": "second"}], session_id=sid)
+    assert result.text == "second answer"
+    assert [m["content"][0]["text"] for m in fakes.seen_messages()[-1]] == ["first", "first answer", "second"]
+
+
+def test_http_client_submits_full_history_job_without_session(http_client: HttpClient) -> None:
+    fakes.script(fakes.text("job answer"))
+    job = http_client.submit(
+        messages=[
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "second"},
+        ]
+    )
+    result = job.result(wait=True)
+    assert result is not None and result.text == "job answer"
+    assert [m["role"] for m in fakes.seen_messages()[0]] == ["user", "assistant", "user"]
+
+
 def test_http_client_raises_on_http_error(http_client: HttpClient) -> None:
     with pytest.raises(InvocationError, match="404"):
         http_client.invoke("hi", agent="ghost")

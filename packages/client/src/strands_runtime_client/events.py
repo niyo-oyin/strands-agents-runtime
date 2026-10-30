@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
 
 
 class _Event(BaseModel):
@@ -178,6 +178,13 @@ class ResultEvent(_StreamEvent):
     metrics: Metrics = Field(default_factory=Metrics)
     nodes: dict[str, NodeSummary] | None = None
     """Graph / Swarm のノード別の結果。単体エージェントでは ``None``。"""
+
+    _parsed: BaseModel | None = PrivateAttr(default=None)
+
+    @property
+    def parsed(self) -> BaseModel | None:
+        """クライアントで response_format に指定したモデルの検証済み結果。通信・保存には含めない。"""
+        return self._parsed
 
 
 class ErrorEvent(_StreamEvent):

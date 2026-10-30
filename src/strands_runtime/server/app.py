@@ -17,7 +17,13 @@ from pydantic import ValidationError
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
-from strands_runtime.errors import JobsDisabledError, SessionBusyError, UnknownAgentError, UnknownJobError
+from strands_runtime.errors import (
+    InvalidRequestError,
+    JobsDisabledError,
+    SessionBusyError,
+    UnknownAgentError,
+    UnknownJobError,
+)
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.logging_setup import configure_logging
 from strands_runtime.runtime import Runtime
@@ -77,6 +83,8 @@ async def _execute(runtime: Runtime, request: InvocationRequest, header_session_
         runtime.invoker.resolve_agent_name(request)
     except UnknownAgentError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidRequestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         if request.mode == "job":

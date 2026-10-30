@@ -229,11 +229,16 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml ru
 
 ## 呼び出しの契約（要点）
 
-- `POST /invocations` の主なフィールド: `agent`、`prompt`（文字列または content block 配列。画像等の `source.bytes` は base64）、`session_id`、`actor_id`、`stream`、`invocation_state`、`include_reasoning`、`tool_result_detail`（`preview` / `full`）。
+- `POST /invocations` の主なフィールド: `agent`、`prompt` または `messages`、`model`、`session_id`、`actor_id`、`stream`、`invocation_state`、`include_reasoning`、`tool_result_detail`（`preview` / `full`）。
+- `prompt` は文字列または content block 配列、`messages` は `role`（`user` / `assistant`）と `content` の配列。`content` は文字列または Strands 形式の content block 配列で、画像等の `source.bytes` は base64。両フィールドの同時指定は不可。
+- `session_id` 指定時の `messages` は1件のみ。Python クライアントは通信前に検証する。`messages` の全履歴を送る場合は `session_id` を省略し、保存済み履歴は読み書きしない。履歴継続の指定は JSON 本文の `session_id` で行う。
+- `model` は `provider/model-id` 形式で、同じプロバイダーのモデルを今回だけ上書きする。接続設定を引き継ぎ、指定時はフォールバックを使わない。`model.module` と Graph / Swarm のモデル上書きは不可。入力例と詳しい制約は [クライアントのREADME](packages/client/README.md#messages-とモデル指定) を参照。
+- 生成条件は `max_output_tokens`・`temperature`・`top_p`・`reasoning_effort`・`response_format`・`tool_choice`、実行上限は `timeout_seconds`・`max_turns`・`max_total_tokens` で指定できる。未指定は定義・ランタイムの既定値を継承し、実行上限は定義側の上限を超えない。対応範囲と使用例は [呼び出しごとのパラメータ](packages/client/README.md#呼び出しごとのパラメータ) を参照。
 - イベント: `start` → `text` / `reasoning` / `tool_use` / `tool_result` … → `result`（`stop_reason`、`text`、`structured_output`、`metrics`）または `error`。
+- `response_format` にはPydanticモデルクラスも指定でき、正常完了時の検証済み結果を `result.parsed` で取得できる。スキーマ指定済みのエージェントでは出力形式の上書きを拒否する。
 - `stop_reason` は Strands の値に加え、`structured_output`（構造化回答）と `timeout`（`[limits] timeout_seconds` 超過）をランタイムが返す。
 - 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）は `prompt = [{"interruptResponse": {...}}]` で再開。
-- `kind = "graph"` / `"swarm"` の定義で Graph / Swarm を宣言し、同じ契約で呼べる。ノードの遷移は `node_start` / `node_stop` / `handoff` イベント、ノード別の結果は `result.nodes`。
+- `kind = "graph"` / `"swarm"` の定義で Graph / Swarm を宣言し、`prompt` または1件の `user` メッセージで呼べる。ノードの遷移は `node_start` / `node_stop` / `handoff` イベント、ノード別の結果は `result.nodes`。
 - `mode`（`run` / `job` / `status` / `follow` / `result` / `cancel`）でジョブを操作する。ジョブのイベントには `seq` / `ts` が付き、`follow` は `after` から再生する。`include_subagents = true` でサブエージェント内のイベントを `agent` / `parent` 付きで流す。
 - ジョブのジャーナルは `[session]` の `local` / `s3` に置く（`[jobs] storage` で別の置き場も指定できる）。`agentcore_memory` / `none` の構成では `[jobs]` を明示しない限りジョブは無効。
 - 実モデルの結合テスト: `uv run --env-file .env pytest tests_integ -q`

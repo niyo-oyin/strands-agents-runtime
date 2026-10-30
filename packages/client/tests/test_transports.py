@@ -75,7 +75,7 @@ def test_agentcore_without_runtime(streaming):
                 "runtimeSessionId": sid,
                 "contentType": "application/json",
                 "accept": "text/event-stream",
-                "payload": json.dumps({"prompt": "hello", "stream": True, "session_id": sid}).encode("utf-8"),
+                "payload": json.dumps({"prompt": "hello", "session_id": sid, "stream": True}).encode("utf-8"),
             },
         )
         assert client.invoke("hello", session_id=sid) == ResultEvent(**result)
@@ -84,3 +84,37 @@ def test_agentcore_without_runtime(streaming):
 
 def test_events_parse_without_runtime():
     assert parse_event(b'{"type":"text","text":"hello"}') == TextEvent(text="hello")
+
+
+@pytest.mark.parametrize("method", ["invoke", "submit"])
+def test_agentcore_generated_routing_id_does_not_turn_full_history_into_session_input(monkeypatch, method):
+    session = boto3.Session(aws_access_key_id="testing", aws_secret_access_key="testing", region_name="us-east-1")
+    client = AgentCoreClient(
+        "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test-1234567890", boto_session=session
+    )
+    sid = "00000000-0000-4000-8000-000000000002"
+    monkeypatch.setattr("strands_runtime_client.agentcore.new_session_id", lambda: sid)
+    history = [{"role": "assistant", "content": "previous"}, {"role": "user", "content": "next"}]
+    result = {**RESULT, "session_id": sid}
+    expected = {"messages": history, "model": "openai/deployment", "stream": True}
+    if method == "submit":
+        result = {"type": "job", "agent": "assistant", "session_id": sid, "job_id": "j", "state": "running"}
+        result.update(accepted_at="2026-10-30T00:00:00Z", updated_at="2026-10-30T00:00:00Z")
+        expected.update(mode="job", tool_result_detail="preview", include_subagents=False)
+    response = json.dumps(result).encode()
+    with Stubber(client._client) as stub:
+        stub.add_response(
+            "invoke_agent_runtime",
+            {"contentType": "application/json", "response": StreamingBody(io.BytesIO(response), len(response))},
+            {
+                "agentRuntimeArn": client._runtime_arn,
+                "qualifier": "DEFAULT",
+                "runtimeSessionId": sid,
+                "contentType": "application/json",
+                "accept": "text/event-stream",
+                "payload": json.dumps(expected).encode(),
+            },
+        )
+        outcome = getattr(client, method)(messages=history, model="openai/deployment")
+        assert outcome.session_id == sid
+        stub.assert_no_pending_responses()

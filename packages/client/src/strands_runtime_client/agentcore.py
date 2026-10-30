@@ -40,9 +40,8 @@ class AgentCoreClient(AgentClient):
 
     def _request(self, payload: dict[str, Any], *, session_id: str | None) -> Iterator[Any]:
         # AgentCore はセッション ID を必須とし、API の引数（ヘッダー）で渡した値で microVM を割り当てる。
-        # ペイロードにも同じ値を入れて、ランタイム側の解決と一致させる。
+        # 自動生成した ID はヘッダーだけに渡す。ペイロードの session_id は利用者による履歴継続の指定。
         runtime_session_id = session_id or new_session_id()
-        payload = {**payload, "session_id": runtime_session_id}
         try:
             response = self._client.invoke_agent_runtime(
                 agentRuntimeArn=self._runtime_arn,

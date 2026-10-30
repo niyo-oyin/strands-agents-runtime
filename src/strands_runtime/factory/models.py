@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
+from copy import deepcopy
 from typing import Any
 
 from strands.models import CacheConfig, Model, ModelRouter
 from strands_harness.models import resolve_model
 
 from strands_runtime.definitions.schema import ModelCandidate, ModelDefaults, ModelSpec
-from strands_runtime.errors import DefinitionError
+from strands_runtime.errors import DefinitionError, InvalidRequestError
 from strands_runtime.factory.references import load_attribute
+from strands_runtime.factory.request_options import apply_generation, provider_of, validate_generation
+from strands_runtime_client.inputs import GenerationOptions
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +29,22 @@ OPENAI_CHAT_PROVIDER = "openai-chat"
 """
 
 
-def build_model(spec: ModelSpec, defaults: ModelDefaults) -> Model | ModelRouter:
+def override_model(spec: ModelSpec, defaults: ModelDefaults, model_id: str) -> ModelSpec:
+    """接続設定を保ち、今回の主モデルだけを選ぶ。定義やフォールバック候補は変更しない。"""
+    if spec.module is not None:
+        raise InvalidRequestError("model cannot override a model.module definition; use a model.id definition")
+    configured = spec.id or defaults.default_id
+    provider, separator, name = model_id.partition("/")
+    if not separator or not name or provider != configured.partition("/")[0]:
+        raise InvalidRequestError(f"model must use the same provider as {configured!r}")
+    # config.model_id が、リクエストで選んだ ID を再度上書きしないようにする。
+    config = {key: value for key, value in spec.config.items() if key != "model_id"}
+    return spec.model_copy(update={"id": model_id, "fallbacks": [], "config": config})
+
+
+def build_model(
+    spec: ModelSpec, defaults: ModelDefaults, options: GenerationOptions | None = None
+) -> Model | ModelRouter:
     """1 エージェント分のモデルを組み立てる。
 
     主モデルと ``fallbacks`` の各候補は同じ手順で作る。
@@ -38,8 +56,10 @@ def build_model(spec: ModelSpec, defaults: ModelDefaults) -> Model | ModelRouter
         candidates = spec.candidates(default_id=defaults.default_id)
     except ValueError as exc:
         raise DefinitionError(str(exc)) from exc
+    if options is not None:
+        validate_generation(spec, defaults, options)
     cache = CacheConfig(**spec.cache.model_dump()) if spec.cache is not None else None
-    built = [_build_candidate(c, spec, defaults, cache) for c in candidates]
+    built = [_build_candidate(c, spec, defaults, cache, options) for c in candidates]
 
     if len(built) == 1:
         return built[0]
@@ -51,10 +71,22 @@ def build_model(spec: ModelSpec, defaults: ModelDefaults) -> Model | ModelRouter
 
 
 def _build_candidate(
-    candidate: ModelCandidate, spec: ModelSpec, defaults: ModelDefaults, cache: CacheConfig | None
+    candidate: ModelCandidate,
+    spec: ModelSpec,
+    defaults: ModelDefaults,
+    cache: CacheConfig | None,
+    options: GenerationOptions | None = None,
 ) -> Model | ModelRouter:
     """候補 1 つを ``Model`` にする。``module`` 参照、``openai-chat/``、それ以外（ハーネス解決）の 3 経路。"""
     effort = candidate.effort or "auto"
+    # Chat 互換 API の effort は下流 API に渡す。ほかはハーネスのプロバイダー別変換を使う。
+    if (
+        options is not None
+        and options.reasoning_effort is not None
+        and candidate.id is not None
+        and provider_of(candidate) not in {"openai-chat", "litellm"}
+    ):
+        effort = "off" if options.reasoning_effort == "none" else options.reasoning_effort
     model: Model | ModelRouter
     if candidate.module is not None:
         obj = load_attribute(candidate.module)
@@ -100,11 +132,14 @@ def _build_candidate(
                 "model.cache / model.config cannot be applied to a ModelRouter; configure its candidates"
             )
         return model
+    resolved_config = deepcopy(model.get_config())
     # ``update_config`` は後勝ちなので、ハーネスが決めた値（max_tokens など）を ``config`` で上書きできる。
     if cache is not None:
         model.update_config(cache_config=cache)
     if candidate.config:
         model.update_config(**candidate.config)
+    if options is not None and options.generation_overrides():
+        apply_generation(model, provider_of(candidate), options, resolved_config)
     return model
 
 
