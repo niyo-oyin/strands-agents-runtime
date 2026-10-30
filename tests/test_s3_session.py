@@ -35,7 +35,10 @@ async def test_history_round_trips_through_s3(tmp_path: Path, aws_env: None) -> 
         prefix = f"sessions/{uuid.uuid4()}/"
         write_agent(tmp_path / "agents", "s3agent")
         runtime = Runtime.load(
-            write_runtime(tmp_path, f'[session]\nbackend = "s3"\nbucket = "{BUCKET}"\nprefix = "{prefix}"')
+            write_runtime(
+                tmp_path,
+                f'[session]\nbackend = "local"\n[session.history]\nbackend = "s3"\nbucket = "{BUCKET}"\nprefix = "{prefix}"',
+            )
         )
         fakes.script(fakes.text("first"), fakes.text("second"))
         session_id = f"s3-{uuid.uuid4()}"

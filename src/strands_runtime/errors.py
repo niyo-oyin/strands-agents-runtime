@@ -29,11 +29,15 @@ class UnknownAgentError(StrandsRuntimeError):
 
 
 class SessionBusyError(StrandsRuntimeError):
-    """同じセッションの別の実行（同期実行またはジョブ）が進行中。サーバーは 409 にする（AgentCore の扱いと同じ）。"""
+    """同じセッションの別の実行が実行中・待機中、または未解放の予約がある。サーバーは409にする。"""
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
         super().__init__(f"session {session_id!r} already has an invocation in progress; retry later")
+
+
+class CapacityError(StrandsRuntimeError):
+    """実行待ちが満杯・時間切れ、または停止中。実行開始前に HTTP 503 を返す。"""
 
 
 class ReferenceResolutionError(StrandsRuntimeError):
@@ -55,6 +59,6 @@ class JobsDisabledError(StrandsRuntimeError):
 
     def __init__(self) -> None:
         super().__init__(
-            "jobs are disabled: [session] backend has no storage for the journal; "
+            "jobs are disabled: [session.history] backend has no storage for the journal; "
             'set [jobs] storage = "local" or "s3" in runtime.toml'
         )

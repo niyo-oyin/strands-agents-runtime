@@ -41,7 +41,7 @@ uv run python scripts/dev.py docker-run
 設定ファイルやイメージ名は `--config runtime.toml` / `--image strands-runtime:dev` で指定できます。
 Docker 関連タスクには Docker が必要です（Windows では Linux コンテナを使用）。
 
-`[session] backend = "s3"` は moto（S3 のプロセス内モック）で往復を検証しています（`tests/test_s3_session.py`）。実バケットでの確認はフェーズ 2。
+`[session.history] backend = "s3"` は moto（S3 のプロセス内モック）で往復を検証しています（`tests/test_s3_session.py`）。実バケットでの確認はフェーズ 2。
 
 ## 使い方
 
@@ -237,10 +237,11 @@ uv run --env-file .env strands-runtime -c examples/feature-check/runtime.toml ru
 - イベント: `start` → `text` / `reasoning` / `tool_use` / `tool_result` … → `result`（`stop_reason`、`text`、`structured_output`、`metrics`）または `error`。
 - `response_format` にはPydanticモデルクラスも指定でき、正常完了時の検証済み結果を `result.parsed` で取得できる。スキーマ指定済みのエージェントでは出力形式の上書きを拒否する。
 - `stop_reason` は Strands の値に加え、`structured_output`（構造化回答）と `timeout`（`[limits] timeout_seconds` 超過）をランタイムが返す。
+- `[server] workers` で同じホスト内の複数ワーカーを起動できる。各ワーカーの同時実行は既定16件、待機は64件・30秒まで。同じセッションの実行・待機中は共有する実行管理を通じて409、満杯・待機時間切れは503を返す。AgentCoreは1ワーカー＋メモリ、ローカルの複数ワーカーはSQLite、複数コンテナはDynamoDB / Cosmos DBで調整する。環境ごとの制約とスレッド数・TCP backlogの設定は [同時実行と負荷の調整](docs/manual.md#6-同時実行と負荷の調整) を参照。
 - 同じ `session_id` を同時に呼ぶと 409。中断（`interrupt`）は `prompt = [{"interruptResponse": {...}}]` で再開。
 - `kind = "graph"` / `"swarm"` の定義で Graph / Swarm を宣言し、`prompt` または1件の `user` メッセージで呼べる。ノードの遷移は `node_start` / `node_stop` / `handoff` イベント、ノード別の結果は `result.nodes`。
 - `mode`（`run` / `job` / `status` / `follow` / `result` / `cancel`）でジョブを操作する。ジョブのイベントには `seq` / `ts` が付き、`follow` は `after` から再生する。`include_subagents = true` でサブエージェント内のイベントを `agent` / `parent` 付きで流す。
-- ジョブのジャーナルは `[session]` の `local` / `s3` に置く（`[jobs] storage` で別の置き場も指定できる）。`agentcore_memory` / `none` の構成では `[jobs]` を明示しない限りジョブは無効。
+- ジョブのジャーナルは `[session.history]` のlocal（同じディレクトリのSQLite）/ S3 / DynamoDB / Cosmos DBを継承する。`[jobs] storage = "session"` なら排他用の外部DBを使う。履歴が `agentcore_memory` / `none` の構成では `[jobs]` を明示しない限りジョブは無効。
 - 実モデルの結合テスト: `uv run --env-file .env pytest tests_integ -q`
 
 ## 観測性（OpenTelemetry）

@@ -5,22 +5,22 @@ from strands_runtime.definitions.registry import Registry
 from strands_runtime.definitions.schema import (
     AgentDefinition,
     ContextSpec,
+    HistorySpec,
     LimitsSpec,
     ModelSpec,
     RuntimeConfig,
-    SessionSpec,
     StructuredOutputSpec,
 )
 
 __all__ = [
     "AgentDefinition",
     "ContextSpec",
+    "HistorySpec",
     "LimitsSpec",
     "ModelSpec",
     "Registry",
     "ResolvedAgent",
     "RuntimeConfig",
-    "SessionSpec",
     "StructuredOutputSpec",
     "load_agent",
     "load_runtime_config",

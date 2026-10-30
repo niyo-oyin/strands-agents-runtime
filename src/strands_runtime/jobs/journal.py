@@ -1,4 +1,4 @@
-"""ジョブのジャーナル。進捗イベントと記録（状態、心拍、カーソル）をセッションストレージに書く。
+"""ジョブのジャーナル。進捗イベントと記録（状態、心拍、カーソル）を設定された保存先に書く。
 
 キー配置（設計文書 §7.6.4）::
 
@@ -14,11 +14,11 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
-from strands.storage import Storage
+from pydantic import BaseModel
 
-from strands_runtime_client.events import JobEvent, dump_event, parse_event
+from strands_runtime_client.events import CancelledBy, JobEvent, dump_event, parse_event
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,18 @@ class JobRecord(JobEvent):
         return JobEvent.model_validate(self.model_dump(exclude={"cancel_requested_at", "owner"}))
 
 
+class JobCancellation(BaseModel):
+    requested_at: str
+    by: CancelledBy
+
+
+class JournalStorage(Protocol):
+    async def read(self, key: str) -> bytes | None: ...
+    async def write(self, key: str, data: bytes) -> None: ...
+
+
 class JobJournal:
-    def __init__(self, storage: Storage) -> None:
+    def __init__(self, storage: JournalStorage) -> None:
         self._storage = storage
 
     @staticmethod
@@ -74,6 +84,16 @@ class JobJournal:
         data = await self._storage.read(self._latest_key(session_id))
         return data.decode("utf-8") if data else None
 
+    async def request_cancel(self, session_id: str, job_id: str, cancellation: JobCancellation) -> None:
+        # 所有ワーカーが更新する job.json と分け、心拍更新による停止要求の取りこぼしを防ぐ。
+        await self._storage.write(
+            f"jobs/{session_id}/{job_id}/cancel.json", cancellation.model_dump_json().encode("utf-8")
+        )
+
+    async def read_cancellation(self, session_id: str, job_id: str) -> JobCancellation | None:
+        data = await self._storage.read(f"jobs/{session_id}/{job_id}/cancel.json")
+        return JobCancellation.model_validate_json(data) if data else None
+
     async def write_event(self, session_id: str, job_id: str, event: Any) -> None:
         """``seq`` の付いたイベントを 1 件書く。"""
         assert event.seq is not None
@@ -93,6 +113,9 @@ class JobJournal:
         # ジャーナルの書き込み失敗でジョブ自体を止めない。次の書き込みで記録は追いつく。
         try:
             await self._storage.write(key, data)
+        except ValueError:
+            # サイズ超過など再試行しても保存できない記録は、成功した扱いにしない。
+            raise
         except Exception:
             logger.warning("job journal write failed (key=%s)", key, exc_info=True)
 

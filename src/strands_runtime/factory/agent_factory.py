@@ -19,15 +19,15 @@ from strands_runtime.definitions.registry import Registry
 from strands_runtime.definitions.schema import (
     AgentDefinition,
     GraphDefinition,
+    HistorySpec,
     RuntimeConfig,
-    SessionSpec,
     SwarmDefinition,
 )
 from strands_runtime.errors import DefinitionError, InvalidRequestError
 from strands_runtime.factory.models import build_model, override_model
 from strands_runtime.factory.references import load_attribute, resolve_class
 from strands_runtime.factory.request_options import configure_tool_choice, validate_generation
-from strands_runtime.factory.sessions import SessionContext, SessionManagerFactory, effective_session_spec
+from strands_runtime.factory.sessions import SessionContext, SessionManagerFactory, effective_history_spec
 from strands_runtime.factory.tools import (
     MCPClientCache,
     build_context_injectors,
@@ -168,11 +168,11 @@ class AgentFactory:
             node_id=node_id,
         )
 
-    def _orchestrator_session(self, spec: SessionSpec, session: SessionContext, *, persist: bool) -> Any:
+    def _orchestrator_session(self, spec: HistorySpec, session: SessionContext, *, persist: bool) -> Any:
         """オーケストレーターの状態（進んだノード、中断状態）の保存先。``none`` と入れ子では付けない。"""
         if not persist:
             return None
-        effective = effective_session_spec(spec, self._config.session)
+        effective = effective_history_spec(spec, self._config.session.history)
         if effective.backend == "none":
             return None
         if effective.backend == "agentcore_memory":
@@ -220,7 +220,7 @@ class AgentFactory:
         if d.limits.node_timeout_seconds is not None:
             builder.set_node_timeout(d.limits.node_timeout_seconds)
         builder.set_graph_id(scope)
-        session_manager = self._orchestrator_session(d.session, session, persist=persist)
+        session_manager = self._orchestrator_session(d.session.history, session, persist=persist)
         if session_manager is not None:
             builder.set_session_manager(session_manager)
         return builder.build()
@@ -255,7 +255,7 @@ class AgentFactory:
             node_timeout=limits.node_timeout_seconds,
             repetitive_handoff_detection_window=limits.repetitive_handoff_window,
             repetitive_handoff_min_unique_agents=limits.repetitive_handoff_min_unique_agents,
-            session_manager=self._orchestrator_session(d.session, session, persist=persist),
+            session_manager=self._orchestrator_session(d.session.history, session, persist=persist),
             id=scope,
         )
 
@@ -298,7 +298,9 @@ class AgentFactory:
             structured_output_model = resolve_class(d.structured_output.model, BaseModel)
 
         session_manager = (
-            self._sessions.build(effective_session_spec(d.session, self._config.session), session) if persist else None
+            self._sessions.build(effective_history_spec(d.session.history, self._config.session.history), session)
+            if persist
+            else None
         )
         # ``session.id`` と ``user.id`` は可視化ツールがセッション・利用者のグルーピングに使う属性名。
         trace_attributes: dict[str, str] = {

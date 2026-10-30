@@ -137,7 +137,11 @@ top_p = 0.9
 {params}
 ''',
     )
-    return Runtime.load(write_runtime(tmp_path, 'default_agent = "a"\n[session]\nbackend = "local"'))
+    return Runtime.load(
+        write_runtime(
+            tmp_path, 'default_agent = "a"\n[session]\nbackend = "local"\n[session.history]\nbackend = "local"'
+        )
+    )
 
 
 @pytest.mark.parametrize("provider", ["openai", "openai-chat"])

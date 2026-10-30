@@ -2,7 +2,7 @@
 #
 # - prompt.md、tools、[model] などエージェント向けのキーは持たない。ノードの設定は参照先の agent.toml に置く。
 # - 呼び出し 1 回でワークフローを 1 回実行する。ノードの会話は呼び出しをまたいで残らない。
-# - [session] はオーケストレーターの状態（進んだノード、中断状態）の保存先で、HITL の再開に使う。
+# - [session.history] はオーケストレーターの状態（進んだノード、中断状態）の保存先で、HITL の再開に使う。
 
 name = "flow"
 kind = "graph"
@@ -42,7 +42,7 @@ to = "merge"
 from = "helper-again"
 to = "merge"
 
-[session]
+[session.history]
 backend = "inherit"                         # inherit | local | s3 | none。agentcore_memory は使えない
 
 [limits]

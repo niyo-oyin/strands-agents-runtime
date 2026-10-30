@@ -1,5 +1,5 @@
 # 最小の定義。name と prompt.md があれば動く。
-# [model] を省略すると runtime.toml の [model] default_id を使い、[session] は runtime.toml を継承する。
+# [model] を省略すると runtime.toml の [model] default_id を使い、[session.history] は runtime.toml を継承する。
 name = "helper"
 description = "reference から subagents として呼ばれる補助エージェント"
 

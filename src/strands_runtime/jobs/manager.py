@@ -20,8 +20,8 @@ from typing import Any, Protocol
 from opentelemetry import trace
 
 from strands_runtime.errors import JobsDisabledError, UnknownJobError
-from strands_runtime.invoke.invoker import CANCEL_DRAIN_SECONDS, InvocationRequest, Invoker
-from strands_runtime.jobs.journal import JobJournal, JobRecord, seconds_since, utcnow
+from strands_runtime.invoke.invoker import CANCEL_DRAIN_SECONDS, InvocationRequest, Invoker, _aclose
+from strands_runtime.jobs.journal import JobCancellation, JobJournal, JobRecord, seconds_since, utcnow
 from strands_runtime_client.events import (
     CancelledBy,
     ErrorEvent,
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 30.0
 """実行中のジョブが ``job.json`` の ``updated_at`` を進める間隔。"""
 LOST_AFTER_SECONDS = HEARTBEAT_SECONDS * 3
-"""この時間、心拍が止まった実行中のジョブはプロセスごと消えたとみなす。"""
+"""この時間、心拍が止まったジョブはJobLostと報告する。所有者の終了は確認できない。"""
 FOLLOW_POLL_SECONDS = 1.0
 """ジョブを持たないプロセスで ``follow`` するときの、ジャーナルを読み直す間隔。"""
 SUMMARY_CHARS = 80
@@ -130,11 +130,18 @@ class JobManager:
         )
         job = _RunningJob(record=record, cancel=cancel)
         self._running[record.job_id] = job
-        if self.busy_tracker is not None:
-            job.busy_handle = self.busy_tracker.start(f"job:{record.agent}")
-        await journal.write_record(record)
-        await journal.write_latest(record.session_id, record.job_id)
-        await self._append(job, first)
+        try:
+            if self.busy_tracker is not None:
+                job.busy_handle = self.busy_tracker.start(f"job:{record.agent}")
+            await journal.write_record(record)
+            await journal.write_latest(record.session_id, record.job_id)
+            await self._append(job, first)
+        except BaseException:
+            try:
+                await _aclose(stream)
+            finally:
+                await self._finish(job)
+            raise
 
         job.task = asyncio.create_task(self._consume(job, stream), name=f"job-{record.job_id}")
         job.heartbeat = asyncio.create_task(self._heartbeat(job), name=f"job-heartbeat-{record.job_id}")
@@ -150,6 +157,7 @@ class JobManager:
             logger.exception("job %s failed outside the agent loop", job.record.job_id)
             await self._append(job, ErrorEvent(error_type="JobFailed", message="the job loop raised unexpectedly"))
         finally:
+            await _aclose(stream)
             await self._finish(job)
 
     async def _finish(self, job: _RunningJob) -> None:
@@ -199,9 +207,9 @@ class JobManager:
             if job.finished:
                 return
             if not job.cancel.is_set():
-                stored = await journal.read_record(record.session_id, record.job_id)
-                if stored is not None and stored.cancel_requested_at is not None:
-                    self._request_cancel(job, stored.cancelled_by or "client", stored.cancel_requested_at)
+                cancellation = await journal.read_cancellation(record.session_id, record.job_id)
+                if cancellation is not None:
+                    self._request_cancel(job, cancellation.by, cancellation.requested_at)
             record.updated_at = utcnow()
             await journal.write_record(record)
 
@@ -215,6 +223,8 @@ class JobManager:
         record = await self._load(session_id, job_id)
         if not record.finished:
             return record.as_event()
+        if record.error_type == "JobLost":
+            return _lost_event(record)
         journal = self._require_journal()
         events = await journal.read_events(record.session_id, record.job_id, after=record.seq - 1, upto=record.seq)
         if events and isinstance(events[0], ResultEvent | ErrorEvent):
@@ -255,6 +265,8 @@ class JobManager:
         while True:
             for event in await journal.read_events(record.session_id, record.job_id, after=cursor, upto=record.seq):
                 yield event
+            if record.error_type == "JobLost" and cursor < record.seq:
+                yield _lost_event(record)
             cursor = max(cursor, record.seq)
             if record.finished:
                 return
@@ -270,15 +282,17 @@ class JobManager:
             return record.as_event()
         job = self._running.get(record.job_id)
         now = utcnow()
+        journal = self._require_journal()
+        await journal.request_cancel(session_id, record.job_id, JobCancellation(requested_at=now, by=by))
         if job is not None:
             self._request_cancel(job, by, now)
             record = job.record
+            await journal.write_record(record)
         else:
             # 別プロセスのジョブ。要求をジャーナルに書き、そのプロセスの心拍に拾わせる。
             record.cancel_requested_at = now
             record.cancelled_by = by
             record.state = "cancelling"
-        await self._require_journal().write_record(record)
         return record.as_event()
 
     def _request_cancel(self, job: _RunningJob, by: CancelledBy, at: str) -> None:
@@ -322,7 +336,7 @@ class JobManager:
         return self._journal
 
     async def _load(self, session_id: str, job_id: str | None) -> JobRecord:
-        """記録を読む。心拍が途絶えた実行中のジョブは、ここで ``JobLost`` の失敗として確定する。"""
+        """記録を読む。心拍が途絶えたジョブはJobLostとして返すが、所有者の記録は上書きしない。"""
         journal = self._require_journal()
         resolved = job_id or await journal.read_latest(session_id)
         if resolved is None:
@@ -339,23 +353,14 @@ class JobManager:
         return record
 
     async def _mark_lost(self, record: JobRecord) -> JobRecord:
-        journal = self._require_journal()
         now = utcnow()
-        lost = ErrorEvent(
-            error_type="JobLost",
-            message=f"no heartbeat since {record.updated_at}; the process running this job is gone",
-            seq=record.seq + 1,
-            ts=now,
-        )
-        await journal.write_event(record.session_id, record.job_id, lost)
-        record.seq = lost.seq or record.seq + 1
+        record.seq += 1
         record.updated_at = now
         record.finished_at = now
         record.state = "failed"
         record.error_type = "JobLost"
         record.cancelled_by = None
         record.last_event = JobLastEvent(seq=record.seq, ts=now, type="error", summary="JobLost")
-        await journal.write_record(record)
         return record
 
 
@@ -363,6 +368,15 @@ def _tag_span(job_id: str) -> None:
     span = trace.get_current_span()
     if span.is_recording():
         span.set_attribute(JOB_ID_ATTRIBUTE, job_id)
+
+
+def _lost_event(record: JobRecord) -> ErrorEvent:
+    return ErrorEvent(
+        error_type="JobLost",
+        message="job heartbeat is unavailable; execution termination is not confirmed",
+        seq=record.seq,
+        ts=record.finished_at,
+    )
 
 
 def _state_for_result(stop_reason: str) -> JobState:

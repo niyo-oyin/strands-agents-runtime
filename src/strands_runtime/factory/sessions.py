@@ -10,7 +10,7 @@ from pathlib import Path
 from strands.session import SessionManager, SnapshotSessionManager
 from strands.storage import LocalFileStorage, S3Storage, Storage
 
-from strands_runtime.definitions.schema import SessionSpec
+from strands_runtime.definitions.schema import HistorySpec
 from strands_runtime.errors import DefinitionError
 
 DEFAULT_LOCAL_SESSION_DIR = "./.runtime/sessions"
@@ -29,8 +29,8 @@ class SessionContext:
         return SessionContext(session_id=f"{self.session_id}--{name}", actor_id=self.actor_id)
 
 
-def effective_session_spec(agent_spec: SessionSpec, runtime_spec: SessionSpec) -> SessionSpec:
-    """``agent.toml`` の ``[session]`` が ``inherit`` なら ``runtime.toml`` の設定を使う。"""
+def effective_history_spec(agent_spec: HistorySpec, runtime_spec: HistorySpec) -> HistorySpec:
+    """``agent.toml`` の ``[session.history]`` が ``inherit`` なら ``runtime.toml`` の設定を使う。"""
     return runtime_spec if agent_spec.backend == "inherit" else agent_spec
 
 
@@ -42,27 +42,32 @@ class SessionManagerFactory:
         self._storages: dict[str, Storage] = {}
         self._lock = threading.Lock()
 
-    def build(self, spec: SessionSpec, ctx: SessionContext) -> SessionManager | None:
+    def build(self, spec: HistorySpec, ctx: SessionContext) -> SessionManager | None:
         match spec.backend:
             case "none":
                 return None
-            case "local" | "s3":
+            case "local" | "s3" | "dynamodb" | "cosmos":
                 storage = self.storage_for(spec)
                 assert storage is not None
                 return SnapshotSessionManager(ctx.session_id, storage=storage)
             case "agentcore_memory":
                 return self._agentcore_memory(spec, ctx)
             case _:
-                # ``inherit`` は effective_session_spec で解決済みのはずなので、ここに来るのは配線ミス。
+                # ``inherit`` は effective_history_spec で解決済みのはずなので、ここに来るのは配線ミス。
                 raise DefinitionError(f"session backend {spec.backend!r} cannot be built (did inheritance resolve?)")
 
-    def storage_for(self, spec: SessionSpec) -> Storage | None:
-        """``local`` / ``s3`` の共有 ``Storage`` を返す。他のバックエンドには汎用の Storage がないので ``None``。"""
+    def storage_for(self, spec: HistorySpec) -> Storage | None:
+        """local / S3 / NoSQL の共有Storageを返す。Memory / noneには汎用StorageがないのでNone。"""
         match spec.backend:
             case "local":
                 return self._storage(f"local:{spec.dir}", lambda: self._local_storage(spec))
             case "s3":
                 return self._storage(f"s3:{spec.bucket}:{spec.prefix}:{spec.region}", lambda: self._s3_storage(spec))
+            case "dynamodb" | "cosmos":
+                from strands_runtime.factory.nosql_storage import NoSQLStorage
+                from strands_runtime.invoke.shared_store import SharedStore
+
+                return self._storage(spec.model_dump_json(), lambda: NoSQLStorage(SharedStore(spec)))
             case _:
                 return None
 
@@ -73,23 +78,23 @@ class SessionManagerFactory:
                 self._storages[key] = make()
             return self._storages[key]
 
-    def _local_storage(self, spec: SessionSpec) -> Storage:
+    def _local_storage(self, spec: HistorySpec) -> Storage:
         directory = (self._base_dir / (spec.dir or DEFAULT_LOCAL_SESSION_DIR)).resolve()
         directory.mkdir(parents=True, exist_ok=True)
         return LocalFileStorage(str(directory))
 
     @staticmethod
-    def _s3_storage(spec: SessionSpec) -> Storage:
-        assert spec.bucket is not None  # SessionSpec の検証で保証済み
+    def _s3_storage(spec: HistorySpec) -> Storage:
+        assert spec.bucket is not None  # HistorySpec の検証で保証済み
         return S3Storage(spec.bucket, prefix=spec.prefix, region_name=spec.region)
 
     @staticmethod
-    def _agentcore_memory(spec: SessionSpec, ctx: SessionContext) -> SessionManager:
+    def _agentcore_memory(spec: HistorySpec, ctx: SessionContext) -> SessionManager:
         # bedrock-agentcore の Strands 連携はこのバックエンドでしか使わないので、ここで初めて読み込む。
         from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
         from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 
-        assert spec.memory_id is not None  # SessionSpec の検証で保証済み
+        assert spec.memory_id is not None  # HistorySpec の検証で保証済み
         config = AgentCoreMemoryConfig(
             memory_id=spec.memory_id,
             session_id=ctx.session_id,

@@ -61,12 +61,17 @@ def load_deployments(path: Path) -> Deployments:
 
 
 def session_backend(repo_root: Path, runtime_config: str) -> str:
-    """Runtime の ``runtime.toml`` から ``[session] backend`` だけを読む。
+    """Runtime の ``runtime.toml`` から ``[session.history] backend`` だけを読む。
 
     ランタイム本体のローダーは ``${VAR}`` を環境変数に展開するが、合成（synth）時にはシークレットが揃っていないので、
     展開せずに TOML を直接読む。
     """
     with (repo_root / runtime_config).open("rb") as fh:
         data = tomllib.load(fh)
-    backend = data.get("session", {}).get("backend", "local")
+    session = data.get("session", {})
+    if session.get("backend") != "agentcore" or data.get("server", {}).get("workers", 1) != 1:
+        raise ValueError(
+            f"{runtime_config}: AgentCore deployment requires session.backend = 'agentcore' and one worker"
+        )
+    backend = session.get("history", {}).get("backend", "none")
     return str(backend)

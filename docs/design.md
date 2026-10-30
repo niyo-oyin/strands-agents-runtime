@@ -122,7 +122,7 @@ strands_runtime/
     agent_factory.py
     models.py       # resolve_model のラッパー、model.config の適用
     tools.py        # ツール文字列・MCP・スキルの解決、プロセス内キャッシュ
-    sessions.py     # session.backend → SessionManager
+    sessions.py     # session.history.backend → SessionManager
   invoke/
     invoker.py      # 1 リクエストの実行とイベント正規化
   server/
@@ -228,7 +228,7 @@ manager = "off"                          # off|auto|agentic（Strands の contex
 inject = ["datetime", "actor"]           # 任意: 各ユーザーターンに注入する一時コンテキスト（履歴には残らない）
 timezone = "Asia/Tokyo"                  # datetime 注入のタイムゾーン
 
-[session]                                # 省略時は runtime.toml の [session] を継承
+[session.history]                                # 省略時は runtime.toml の [session.history] を継承
 backend = "inherit"
 
 [structured_output]                      # 任意: 最終回答を pydantic モデルで返す
@@ -294,21 +294,24 @@ default_agent = "support-bot"            # payload.agent 省略時に使う
 default_id = "bedrock/global.anthropic.claude-opus-5"
 
 [session]
-backend = "local"                        # local|s3|agentcore_memory|none
+backend = "local"                        # none|local|dynamodb|cosmos|agentcore。排他方式
+
+[session.history]
+backend = "local"                        # local|s3|dynamodb|cosmos|agentcore_memory|none
 dir = "./.runtime/sessions"              # local のとき
 
-# [session]
+# [session.history]
 # backend = "s3"
 # bucket = "my-agent-sessions"
 # prefix = "prod/"
 
-# [session]
+# [session.history]
 # backend = "agentcore_memory"
 # memory_id = "${AGENTCORE_MEMORY_ID}"
 # retrieval = { "/preferences/{actorId}/" = { top_k = 5, relevance_score = 0.7 } }
 
 [jobs]
-storage = "inherit"                      # inherit|local|s3。ジョブのジャーナル置き場（§7.6.7）。inherit は [session] の local / s3 を使う
+storage = "inherit"                      # inherit|local|s3|session|none。ジョブのジャーナル置き場（§7.6.7）。inherit は [session.history] の local / s3 / dynamodb / cosmos を使う
 max_duration_seconds = 28800             # ジョブ 1 件の上限（既定 8 時間）
 
 [server]
@@ -431,18 +434,24 @@ def build(self, d: AgentDefinition, session: SessionContext) -> Agent:
 
 ### 6.1 セッション（短期記憶 = 会話履歴）
 
-`session.backend` で `SessionManager` を選ぶ。
+`[session] backend` は会話の排他方式、`[session.history] backend` は保存先を指定する。
+両方ともランタイムの既定は `none`。排他が `none` の場合は履歴保存を有効にできない。
+排他は `local`（同じホストのSQLite）、`dynamodb`、`cosmos`、`agentcore`（1ワーカーのメモリ）から選ぶ。
+ワーカー数・待機枠・DB要件・復旧手順は [マニュアル](manual.md#6-同時実行と負荷の調整) を参照。
+
+`session.history.backend` で `SessionManager` を選ぶ。
 
 | backend | 実装 | 用途 |
 |---|---|---|
 | `local` | `SnapshotSessionManager(session_id, storage=LocalFileStorage(dir))` | ローカル開発 |
 | `s3` | `SnapshotSessionManager(session_id, storage=S3Storage(bucket, prefix=...))` | Docker/AgentCore で AgentCore Memory を使わない場合 |
 | `agentcore_memory` | `AgentCoreMemorySessionManager(AgentCoreMemoryConfig(memory_id, session_id, actor_id, retrieval_config))` | AgentCore 上で短期記憶に加えて長期記憶（戦略）を使う場合 |
+| `dynamodb` / `cosmos` | `SnapshotSessionManager(session_id, storage=NoSQLStorage(...))` | スナップショットをチャンク分割して保存 |
 | `none` | `session_manager=None` | ステートレスなワンショット呼び出し |
 
-- 定義側の `[session]` は `backend = "inherit"`（既定）か、上記のいずれかで上書きできる。
+- 定義側の `[session.history]` は `backend = "inherit"`（既定）か、上記のいずれかで上書きできる。
 - `agentcore_memory` は `actor_id` が必須なので、ペイロードの `actor_id`（省略時は `"anonymous"`）を使う。
-- AgentCore の microVM はセッションに紐づくが、アイドルタイムアウトで破棄されるため、**プロセス内メモリをセッション状態の正とは見なさない**。常に `SessionManager` で永続化する。
+- AgentCore の microVM はセッションに紐づくが、アイドルタイムアウトで破棄されるため、**プロセス内メモリをセッション状態の正とは見なさない**。会話を継続する場合は履歴保存を明示するか、クライアントから `messages` を渡す。
 
 ### 6.2 長期記憶
 
@@ -623,7 +632,7 @@ Strands はエージェントオブジェクト単位でしか使用量を持た
 
 #### 7.6.4 ジャーナル
 
-ジャーナルはセッションストレージ（Strands の `Storage`。`local` / `s3`、将来は A7 のモジュール参照）に置く。キー配置は次のとおり。
+ジャーナルはlocalの場合SQLite、s3の場合Strands Storage、executionの場合外部実行管理DBに置く。キー配置は次のとおり。
 
 ```
 jobs/{session_id}/latest                      # 最新の job_id
@@ -649,14 +658,14 @@ S3 では 1 イベント 1 オブジェクトになるが、記録対象が粗�
 
 - 実行中のプロセスは `job.json` の `updated_at` を、イベントの記録時と、少なくとも 30 秒ごと（心拍）に更新する。
 - `status` / `follow` / `result` は、`state = running` のまま `updated_at` が 90 秒（心拍の 3 倍）以上古く、かつそのジョブが自プロセスにない場合、`error_type = "JobLost"` の `error` イベントを書いて `failed` に確定する。プロセス再起動後に走査はせず、観測された時点で確定する（Temporal の heartbeat timeout と同じ考え方）。
-- `cancel` は、ジョブが自プロセスにあれば直ちに `cancel_signal` を立て、同時に `job.json` に `cancel_requested_at` を書く。別のプロセス（複数レプリカの ECS など）で動いているジョブは、心拍のたびに `job.json` を読み直して `cancel_requested_at` を見つけ、自分で `cancel_signal` を立てる。伝播の遅れは最大で心拍 1 回分。
+- `cancel` は、ジョブが自プロセスにあれば直ちに `cancel_signal` を立て、同時に `cancel.json` に停止要求を書く。別のプロセス（複数ワーカーやレプリカなど）で動いているジョブは、心拍のたびに `cancel.json` を読み直して停止要求を見つけ、自分で `cancel_signal` を立てる。伝播の遅れは最大で心拍 1 回分。
 - グレースフルシャットダウン（A8）では、実行中の全ジョブに `cancel_signal` を立てて猶予まで待つ。こうして止まったジョブは `cancelled_by = "runtime"` になり、クライアントは再投入すべき停止だと区別できる。
 
 #### 7.6.6 排他と基盤ごとの挙動
 
-- **排他**: 1 つのセッションで同時に進む実行は 1 つだけ。実行中のセッションに `run` または `job` を送ると HTTP 409。`status` / `follow` / `result` / `cancel` は通す。実行中かどうかはプロセス内の記録に加えて、ジャーナルの最新ジョブが `running` / `cancelling` で心拍が新しいことでも判定するため、別レプリカで走るジョブとの競合も 409 になる。同期実行はジャーナルを持たないので、同期実行同士の排他はプロセス内に限る（現状どおり）。キューイング（LangGraph の `enqueue`）は採用しない。
+- **排他**: 同じセッションの実行中・待機中は409。AgentCoreは1ワーカー＋メモリ、同一ホストの複数ワーカーはSQLite、複数コンテナはDynamoDB / Cosmos DBの条件付き書き込みで予約する。所有者の後始末まで予約を保持する。外部DBの予約には自動失効を設けず、異常終了時は所有者の停止確認後に管理コマンドで解除する。詳細は[マニュアル](manual.md#6-同時実行と負荷の調整)。
 - **`/ping`**: ジョブの受付時に `BedrockAgentCoreApp.add_async_task`、終端で `complete_async_task` を呼び、実行中は `HealthyBusy` を返す。AgentCore ではこれがアイドル終了を止め、上限は `maxLifetime`（microVM は最長 8 時間、Instances 計算タイプは最長 14 日）。他の基盤では情報としての意味しかなく、スケールインからの保護は基盤側の設定（ECS のタスクスケールイン保護など）で行う。
-- **AgentCore**: 同じセッション ID の後続呼び出しは `HealthyBusy` 中でも同じ microVM に届く（409 が返るのはセッションのプロビジョニング中とティアダウン中だけ）。microVM が終了すると実行中のジョブは通知なく失われ、次の呼び出しは新しい microVM に届く。ジャーナルがストレージにあるため、その新しい microVM での `status` が `JobLost` を確定する。
+- **AgentCore**: 同じセッション ID の後続呼び出しは `HealthyBusy` 中でも同じ microVM に届く（409 が返るのはセッションのプロビジョニング中とティアダウン中だけ）。microVM が終了すると実行中のジョブは通知なく失われ、次の呼び出しは新しい microVM に届く。ジャーナルがストレージにあるため、その新しいmicroVMでの `status` が心拍の途絶を `JobLost` として報告する。観測側は所有者の記録を上書きしない。
 - **複数レプリカ**: `status` / `result` / `follow` はジャーナルだけで答えられるので、どのレプリカが受けてもよい。`follow` はジョブを持つプロセスではプロセス内の通知で即時に、それ以外ではジャーナルの追従（1 秒間隔）で流す。
 - **ローカル**: 1 プロセスが複数セッションのジョブを同時に持つ。契約は同じ。
 
@@ -664,13 +673,13 @@ S3 では 1 イベント 1 オブジェクトになるが、記録対象が粗�
 
 ```toml
 [jobs]
-storage = "inherit"            # inherit | local | s3。inherit は [session] の local / s3 をそのまま使う
+storage = "inherit"            # inherit | local | s3 | session | none。inherit は [session.history] の local / s3 / dynamodb / cosmos をそのまま使う
 # dir = "./.runtime/jobs"      # local のとき
 # bucket = "..."; prefix = ""  # s3 のとき
 max_duration_seconds = 28800   # ジョブ 1 件の上限。エージェントの limits.timeout_seconds が短ければそちらが効く
 ```
 
-- `[session] backend` が `agentcore_memory` または `none` の構成では、ジャーナルを置く `Storage` がないため `storage` を明示しない限りジョブ機能は無効（`mode = "job"` は HTTP 400）。
+- `[session.history] backend` が `agentcore_memory` または `none` の構成では、ジャーナルを置く `Storage` がないため `storage` を明示しない限りジョブ機能は無効（`mode = "job"` は HTTP 400）。
 - `max_duration_seconds` は基盤の上限がないローカルや ECS でジョブが際限なく走るのを防ぐための安全弁で、同期実行の監視タイマーをそのまま使う。既定は AgentCore の microVM 上限に合わせた 8 時間。
 - 結果の保持期間はセッションと同じ（A8 のセッション TTL と掃除コマンドで `jobs/` も対象にする）。
 
@@ -694,7 +703,7 @@ max_duration_seconds = 28800   # ジョブ 1 件の上限。エージェント�
 
 #### 7.6.10 採用しなかったもの
 
-- **プロセス再起動後の自動再開**: Strands の checkpoint（experimental）は「エージェントが自発的に一時停止する」仕組みで、障害からの復旧手段ではない。会話履歴は `SessionManager` が終端まで保存しているので、`JobLost` になったジョブは同じセッションに「続けて」と投入すれば続きから進む。自動化は要求が出てから判断する。
+- **プロセス再起動後の自動再開**: Strands の checkpoint（experimental）は「エージェントが自発的に一時停止する」仕組みで、障害からの復旧手段ではない。会話履歴は `SessionManager` が終端まで保存しているので、`JobLost` は停止を確認した状態ではない。所有者の停止と、外部DBに残る予約の解除を確認してから新しい実行を送る。保存済み履歴から会話は再開できるが、途中のツール操作を自動復旧するものではない。自動化は要求が出てから判断する。
 - **コールバック（Webhook / SNS）**: 基盤ごとに配送手段が異なり、契約が `/invocations` の外に出る。必要なら基盤側（EventBridge など）で `result` をポーリングする側に置く。
 - **同一セッションのキューイング**: 409 で拒否し、クライアントに再試行させる方が履歴の整合を保ちやすい。
 - **SSE の `id:` / `Last-Event-ID` による再開**: AgentCore がクライアントのヘッダーを素通ししないため、カーソルはペイロードの `after` に置く。
@@ -767,7 +776,7 @@ from = "review"
 to = "publish"
 condition = "./conditions.py:approved"
 
-[session]                                   # 省略時は runtime.toml を継承。HITL（interrupt）の再開に使う（§8.4）
+[session.history]                                   # 省略時は runtime.toml を継承。HITL（interrupt）の再開に使う（§8.4）
 [limits]
 node_executions = 20                        # ノード実行回数の合計（ループの上限）。省略時は無制限
 timeout_seconds = 900                       # ワークフロー全体の実時間
@@ -801,7 +810,7 @@ repetitive_handoff_min_unique_agents = 3    # 異なるエージェントが M �
 | `output` | 任意 | なし | `result.text` の元。Swarm は常に最後に動いたノード |
 | `reset_on_revisit` | 任意 | なし | |
 | `[limits]` | `node_executions` / `timeout_seconds` / `node_timeout_seconds` | `handoffs` / `timeout_seconds` / `node_timeout_seconds` / `repetitive_handoff_*` | `timeout_seconds` は Strands の `execution_timeout` に渡し、ランタイムの監視タイマー（[§7.2](#72-ストリーミングレスポンスsse) の `timeout`）も同じ値で動かす |
-| `[session]` | 任意 | 任意 | 単体エージェントと同じキー。オーケストレーターの状態の保存先 |
+| `[session.history]` | 任意 | 任意 | 単体エージェントと同じキー。オーケストレーターの状態の保存先 |
 | `tools` / `skills` / `mcp_servers` / `subagents` / `[model]` / `[context]` / `[structured_output]` / `plugins` / `interventions` / `prompt` | 不可 | 不可 | ノードのエージェント側で定義する |
 
 `validate` が確認すること: ノード ID の一意性、`entry` / `edges` / `output` が存在するノードを指すこと、全ノードに入力エッジがあるグラフでは `entry` があること、`condition` のコード参照が解決できること、Swarm のノードと `subagents` が `kind = "agent"` であること、入れ子の深さが `runtime.max_subagent_depth` 以内であること、定義間の循環（graph の中に自分自身を含む）がないこと。
@@ -814,7 +823,7 @@ repetitive_handoff_min_unique_agents = 3    # 異なるエージェントが M �
 - ノードのエージェントは `subagents` と同じく `persist=False`（`SessionManager` なし）で組み立て、`Agent(name=<ノード ID>)` にする。Swarm はノード ID に `agent.name` を使い、`handoff_to_agent` ツールを `Agent` インスタンスに注入するので、ノードごとに専用のインスタンスを作る（リクエストごとの構築は [ADR-5](#adr-5-agent-はリクエストごとに構築し重い資源はプロセス内でキャッシュする) と同じ）。
 - 使用量の集計フック（`UsageCollector`）は全ノードに付け、`result.metrics.agents` にノード単位の内訳を出す。キーはノード ID。
 - オーケストレーターの `id` は定義名。入れ子（graph の中の graph / swarm）は `"<親の定義名>--<ノード ID>"` で、セッション内で一意にする（Strands の既定 `default_graph` のままだとスナップショットのキーが衝突する）。
-- `[session]` が `none` 以外なら、オーケストレーターに `SnapshotSessionManager(session_id, storage=...)` を付ける。保存先のキーは `session/<session_id>/scopes/multiAgent/<id>/`。`agentcore_memory` バックエンドはオーケストレーターの状態を保存できない（`Storage` ではない）ので、graph / swarm の `[session]` では `local` / `s3` / `none` だけを許す。
+- `[session.history]` が `none` 以外なら、オーケストレーターに `SnapshotSessionManager(session_id, storage=...)` を付ける。保存先のキーは `session/<session_id>/scopes/multiAgent/<id>/`。`agentcore_memory` バックエンドはオーケストレーターの状態を保存できない（`Storage` ではない）ので、graph / swarm の `[session.history]` では `local` / `s3` / `dynamodb` / `cosmos` / `none` だけを許す。
 - `wait_for = "all"` のノードには、入ってくるエッジすべてに「元ノードが `completed_nodes` に含まれる」ことを確かめる合成条件を付ける。
 - 入れ子の深さは `subagents` と同じ `runtime.max_subagent_depth` で制限する。
 
@@ -822,7 +831,7 @@ repetitive_handoff_min_unique_agents = 3    # 異なるエージェントが M �
 
 **呼び出し 1 回 = ワークフロー 1 回**。Graph / Swarm には会話の継続がない。ノードのエージェントは呼び出しごとに新しく作られ、履歴は残らない（Strands の設計どおり）。セッションの役割は次の 2 つに限る。
 
-1. **HITL の再開**: ノードのツールが `interrupt` で止まると、オーケストレーターは進捗（完了したノード、中断したノードとその会話）をスナップショットに保存し、`result.stop_reason = "interrupt"` で返る。同じ `session_id` に `prompt = [{"interruptResponse": ...}]` を送ると、中断したノードだけが再開し、完了済みのノードは再実行されない。`[session] backend = "none"` では再開できないので、`interrupt` が起きた時点で `error`（`InterruptNotResumable`）にする。
+1. **HITL の再開**: ノードのツールが `interrupt` で止まると、オーケストレーターは進捗（完了したノード、中断したノードとその会話）をスナップショットに保存し、`result.stop_reason = "interrupt"` で返る。同じ `session_id` に `prompt = [{"interruptResponse": ...}]` を送ると、中断したノードだけが再開し、完了済みのノードは再実行されない。`[session.history] backend = "none"` では再開できないので、`interrupt` が起きた時点で `error`（`InterruptNotResumable`）にする。
 2. **進捗の観測**: ジョブ（[§7.6](#76-長時間実行ジョブと進捗)）のジャーナルと `status` の `last_event` にノードの開始・終了が載る。
 
 完了済みのスナップショットが残っているセッションに新しいプロンプトを送ると、Strands は全ノードをリセットして最初から実行する（意図した挙動）。Swarm の再開は at-least-once で、ノードは重複実行され得る。
@@ -941,7 +950,7 @@ Docker イメージをそのまま 1 サービスとして動かす。契約が 
 | ヘルスチェック | `GET /ping` を使う（`{"status": "Healthy"}`） |
 | セッション ID | ヘッダー `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` は任意。ペイロードの `session_id` でよい |
 | セッションの保存先 | `s3`（AWS）または `local` に永続ボリューム。複数レプリカで同じセッションを扱う場合は永続化が前提になる。S3 以外のオブジェクトストア（Azure Blob など）は Strands の `Storage` 実装をモジュール参照で差し込めるようにする（ロードマップ） |
-| 同一セッションの同時実行 | 409 による排他はプロセス内だけ。レプリカをまたぐ競合を避けるには、ロードバランサーで `session_id` によるスティッキールーティングを行うか、1 セッションが 1 レプリカに閉じる構成にする |
+| 同一セッションの同時実行 | 環境に応じた実行管理で409を返す。設定制約と異常終了時の復旧は[マニュアル](manual.md#6-同時実行と負荷の調整)を参照 |
 | タイムアウト | ロードバランサーのアイドルタイムアウトを SSE に合わせて延ばす。それでも足りないものは [§7.6](#76-長時間実行ジョブと進捗) のジョブ |
 | 認証 | ランタイムは実装しない。ALB / Front Door / API Gateway などの前段で行う |
 | 観測性 | 標準の `OTEL_*` 環境変数でコレクターに送る。`opentelemetry-instrument` は汎用の OpenTelemetry 配布でよく、ADOT は必須ではない |
@@ -956,7 +965,7 @@ Docker イメージをそのまま 1 サービスとして動かす。契約が 
 実装（`infra/`、アカウントなしで `synth` とテストまで確認済み）:
 
 - `infra/deployments.toml` で Runtime を宣言する（`name`、Runtime ごとの `runtime.toml` のパス、`platform_version`、ライフサイクル、追加の環境変数、Secrets Manager から解決するシークレット）。
-- `infra/stack.py` は 1 スタックに、共有イメージ（`AgentRuntimeArtifact.from_asset`、linux/arm64）、Runtime ごとの `Runtime`（HTTP、IAM 認証、PUBLIC ネットワーク、トレース有効）、`runtime.toml` の `[session] backend` に応じた S3 バケットまたは AgentCore Memory、実行ロールへの権限（S3、`bedrock:InvokeModel*`、Memory）を配線する。L2 コンストラクトは ECR・ログ・X-Ray・ワークロード ID の権限しか付けないため、モデル呼び出しはスタック側で足す。
+- `infra/stack.py` は 1 スタックに、共有イメージ（`AgentRuntimeArtifact.from_asset`、linux/arm64）、Runtime ごとの `Runtime`（HTTP、IAM 認証、PUBLIC ネットワーク、トレース有効）、`runtime.toml` の `[session.history] backend` に応じた S3 バケットまたは AgentCore Memory、実行ロールへの権限（S3、`bedrock:InvokeModel*`、Memory）を配線する。L2 コンストラクトは ECR・ログ・X-Ray・ワークロード ID の権限しか付けないため、モデル呼び出しはスタック側で足す。
 - シークレットは `SecretValue.secrets_manager(name).unsafe_unwrap()` による CloudFormation 動的参照で環境変数に渡す。テンプレートには `{{resolve:secretsmanager:...}}` が入り、値は入らない（実デプロイでの解決はフェーズ 2 で確認）。
 - `cdk.json` は `uv run python -m infra.app` を app に指定しており、`npx aws-cdk deploy` で CLI からも使える。`make synth` はアカウント不要で `cdk.out` を生成する。
 

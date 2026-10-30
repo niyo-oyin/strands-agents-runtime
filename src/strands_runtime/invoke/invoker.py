@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from opentelemetry import trace
@@ -26,7 +27,9 @@ from strands_runtime.definitions.registry import Registry
 from strands_runtime.definitions.schema import AgentDefinition, GraphDefinition, RuntimeConfig, SwarmDefinition
 from strands_runtime.errors import InvalidRequestError, SessionBusyError, StrandsRuntimeError, UnknownAgentError
 from strands_runtime.factory import AgentFactory, SessionContext
-from strands_runtime.factory.sessions import ANONYMOUS_ACTOR, effective_session_spec
+from strands_runtime.factory.sessions import ANONYMOUS_ACTOR, effective_history_spec
+from strands_runtime.invoke.admission import AdmissionController
+from strands_runtime.invoke.shared_store import SharedStore
 from strands_runtime.invoke.usage import UsageCollector
 from strands_runtime_client.events import (
     AgentUsageEvent,
@@ -89,11 +92,23 @@ class InvocationRequest(InvocationInput):
 
 
 class Invoker:
-    def __init__(self, factory: AgentFactory, config: RuntimeConfig) -> None:
+    def __init__(
+        self,
+        factory: AgentFactory,
+        config: RuntimeConfig,
+        *,
+        sqlite_path: Path | None = None,
+        shared_store: SharedStore | None = None,
+    ) -> None:
         self._factory = factory
         self._config = config
-        # 実行中のセッション ID。同じセッションの同時呼び出しを拒否するために使う（プロセス内のみ）。
-        self._active_sessions: set[str] = set()
+        self._admission = AdmissionController(
+            config.execution,
+            sqlite_path=sqlite_path,
+            shared_store=shared_store,
+            session_enabled=config.session.backend != "none",
+        )
+        self._runs: dict[str, _Run] = {}
         # プロセスの外（ジョブのジャーナル）でセッションが使用中かを確かめる追加の判定。JobManager が差し込む。
         self.busy_check: Callable[[str], Awaitable[bool]] | None = None
 
@@ -140,28 +155,43 @@ class Invoker:
             session_id=session_id or request.session_id or str(uuid.uuid4()), actor_id=request.actor_id
         )
         name = self.resolve_agent_name(request)
-        if session.session_id in self._active_sessions:
-            raise SessionBusyError(session.session_id)
-        if self.busy_check is not None and await self.busy_check(session.session_id):
-            raise SessionBusyError(session.session_id)
+        terminal: ResultEvent | ErrorEvent | None = None
+        async with self._admission.acquire(session.session_id):
+            if self.busy_check is not None and await self.busy_check(session.session_id):
+                raise SessionBusyError(session.session_id)
+            run = _Run(
+                request,
+                agent_name=name,
+                session=session,
+                cancel=cancel_signal,
+                coalesce_text=coalesce_text,
+                timeout_cap=timeout_cap,
+                span_attributes=span_attributes,
+                node_maps=_node_maps(self._factory.registry, name),
+            )
+            run_id = str(uuid.uuid4())
+            self._runs[run_id] = run
+            execution = self._execute(run)
+            try:
+                yield StartEvent(agent=name, session_id=session.session_id)
+                async for event in execution:
+                    if isinstance(event, ResultEvent | ErrorEvent):
+                        terminal = event
+                    else:
+                        yield event
+            finally:
+                # 実行を閉じ終えるまで、待機中の次リクエストへ枠を渡さない。
+                await _aclose(execution)
+                self._runs.pop(run_id, None)
+        # クライアントは終端を受信すると次のターンを送れる。保存・後始末・予約解放を先に完了する。
+        if terminal is not None:
+            yield terminal
 
-        self._active_sessions.add(session.session_id)
-        run = _Run(
-            request,
-            agent_name=name,
-            session=session,
-            cancel=cancel_signal,
-            coalesce_text=coalesce_text,
-            timeout_cap=timeout_cap,
-            span_attributes=span_attributes,
-            node_maps=_node_maps(self._factory.registry, name),
-        )
-        try:
-            yield StartEvent(agent=name, session_id=session.session_id)
-            async for event in self._execute(run):
-                yield event
-        finally:
-            self._active_sessions.discard(session.session_id)
+    def begin_shutdown(self) -> None:
+        """実行イベントループ上で受付を閉じ、実行中の処理に停止を要求する。"""
+        self._admission.close()
+        for run in self._runs.values():
+            run.cancel.set()
 
     async def _execute(self, run: _Run) -> AsyncIterator[Any]:
         """Agent を組み立てて実行し、イベントを流す。タイムアウト・キャンセル・後始末もここで扱う。"""
@@ -205,7 +235,9 @@ class Invoker:
                 assert isinstance(definition, GraphDefinition | SwarmDefinition)
                 run.output_node = definition.output if isinstance(definition, GraphDefinition) else None
                 run.resumable = (
-                    persist and effective_session_spec(definition.session, self._config.session).backend != "none"
+                    persist
+                    and effective_history_spec(definition.session.history, self._config.session.history).backend
+                    != "none"
                 )
                 if run.request.messages is not None:
                     # オーケストレーターの入力は content block 配列。単一 user メッセージのみ受付時に許可する。
@@ -479,7 +511,7 @@ class _Run:
             return [
                 ErrorEvent(
                     error_type="InterruptNotResumable",
-                    message="a node interrupted, but [session] backend = 'none' cannot save the state needed to resume",
+                    message="a node interrupted, but [session.history] backend = 'none' cannot save the state needed to resume",
                 )
             ]
         if result.status == Status.INTERRUPTED:

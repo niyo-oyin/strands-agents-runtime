@@ -161,14 +161,15 @@ def test_registry_rejects_unpublished_default_agent(tmp_path: Path) -> None:
 
 
 def test_runtime_session_cannot_inherit(tmp_path: Path) -> None:
-    path = write_runtime(tmp_path, '[session]\nbackend = "inherit"')
+    path = write_runtime(tmp_path, '[session.history]\nbackend = "inherit"')
     with pytest.raises(DefinitionError, match="inherit"):
         load_runtime_config(path)
 
 
 def test_missing_runtime_config_uses_defaults(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path / "runtime.toml")
-    assert config.session.backend == "local"
+    assert config.session.backend == "none"
+    assert config.session.history.backend == "none"
     assert config.server.port == 8080
 
 

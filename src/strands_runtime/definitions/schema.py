@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Effort = Literal["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
 ContextManagerName = Literal["auto", "agentic", "off"]
-SessionBackend = Literal["inherit", "local", "s3", "agentcore_memory", "none"]
+HistoryBackend = Literal["inherit", "local", "s3", "dynamodb", "cosmos", "agentcore_memory", "none"]
 
 AGENT_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 """エージェント名はディレクトリ名・``subagents`` のツール名・``agent_id`` を兼ねるため、英小文字と数字に限定する。"""
@@ -182,10 +182,26 @@ class RetrievalSpec(_Strict):
     strategy_id: str | None = None
 
 
-class SessionSpec(_Strict):
-    """``[session]`` テーブル。``runtime.toml`` では既定、``agent.toml`` では上書きとして使う。"""
+class DynamoSpec(_Strict):
+    table: NonBlankStr
+    region: NonBlankStr | None = None
 
-    backend: SessionBackend = "inherit"
+
+class CosmosSpec(_Strict):
+    endpoint: NonBlankStr
+    database: NonBlankStr
+    container: NonBlankStr
+    key: str | None = Field(default=None, repr=False)
+    """省略時はDefaultAzureCredential。環境変数参照で渡し、設定ファイルに直接書かない。"""
+
+
+class HistorySpec(_Strict):
+    """``[session.history]`` テーブル。``runtime.toml`` では既定、``agent.toml`` では上書きとして使う。"""
+
+    backend: HistoryBackend = "inherit"
+    namespace: NonBlankStr = "default"
+    dynamodb: DynamoSpec | None = None
+    cosmos: CosmosSpec | None = None
     # local 用
     dir: NonBlankStr | None = None
     # s3 用
@@ -197,11 +213,46 @@ class SessionSpec(_Strict):
     retrieval: dict[str, RetrievalSpec] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _required_keys(self) -> SessionSpec:
+    def _required_keys(self) -> HistorySpec:
         if self.backend == "s3" and not self.bucket:
-            raise ValueError("session.bucket is required when backend = 's3'")
+            raise ValueError("session.history.bucket is required when backend = 's3'")
         if self.backend == "agentcore_memory" and not self.memory_id:
-            raise ValueError("session.memory_id is required when backend = 'agentcore_memory'")
+            raise ValueError("session.history.memory_id is required when backend = 'agentcore_memory'")
+        _database_settings(self)
+        return self
+
+
+def _database_settings(spec: HistorySpec | SessionSection) -> None:
+    for backend in ("dynamodb", "cosmos"):
+        if (spec.backend == backend) != (getattr(spec, backend) is not None):
+            raise ValueError(f"{backend} connection settings must be set only for backend = '{backend}'")
+
+
+class AgentSessionSpec(_Strict):
+    """エージェント単位では履歴の設定だけを上書きする。排他方式はランタイム全体で共通。"""
+
+    history: HistorySpec = Field(default_factory=HistorySpec)
+
+
+class SessionSection(_Strict):
+    """会話の排他と、その配下の履歴保存。"""
+
+    backend: Literal["none", "local", "dynamodb", "cosmos", "agentcore"] = "none"
+    namespace: NonBlankStr = "default"
+    sqlite_path: NonBlankStr = "./.runtime/execution.sqlite3"
+    dynamodb: DynamoSpec | None = None
+    cosmos: CosmosSpec | None = None
+    history: HistorySpec = Field(default_factory=lambda: HistorySpec(backend="none"))
+
+    @model_validator(mode="after")
+    def _consistent(self) -> SessionSection:
+        _database_settings(self)
+        if self.history.backend == "inherit":
+            raise ValueError("runtime session.history.backend cannot be 'inherit'")
+        if self.backend == "none" and self.history.backend != "none":
+            raise ValueError("session.backend = 'none' requires session.history.backend = 'none'")
+        if self.backend in ("dynamodb", "cosmos") and self.history.backend == "local":
+            raise ValueError("distributed session management cannot use local history")
         return self
 
 
@@ -240,7 +291,7 @@ class AgentDefinition(_Strict):
     mcp_servers: dict[str, dict[str, Any]] | NonBlankStr = Field(default_factory=dict)
     """``mcpServers`` 形式のマッピング（サーバー名 → MCPServerConfig）か、その JSON ファイルへのパス。"""
     context: ContextSpec = Field(default_factory=ContextSpec)
-    session: SessionSpec = Field(default_factory=SessionSpec)
+    session: AgentSessionSpec = Field(default_factory=AgentSessionSpec)
     structured_output: StructuredOutputSpec | None = None
     limits: LimitsSpec | None = None
     interventions: list[NonBlankStr] = Field(default_factory=list)
@@ -305,7 +356,7 @@ class _MultiAgentDefinition(_Strict):
     description: str = ""
     nodes: list[str] | list[NodeSpec] = Field(min_length=1)
     """文字列（定義名 = ノード ID）の配列か、``[[nodes]]`` テーブルの配列。TOML の規則で混在はできない。"""
-    session: SessionSpec = Field(default_factory=SessionSpec)
+    session: AgentSessionSpec = Field(default_factory=AgentSessionSpec)
     """オーケストレーターの状態（進んだノード、中断状態）の保存先。HITL の再開に使う。"""
 
     @property
@@ -328,7 +379,7 @@ class _MultiAgentDefinition(_Strict):
             raise ValueError("node ids must be unique")
         if self.name in self.dependencies:
             raise ValueError("a graph or swarm cannot contain itself as a node")
-        if self.session.backend == "agentcore_memory":
+        if self.session.history.backend == "agentcore_memory":
             raise ValueError("graph / swarm cannot use session backend 'agentcore_memory' (no generic storage)")
         return self
 
@@ -426,17 +477,38 @@ class ServerSection(_Strict):
     """``[server]`` テーブル。"""
 
     host: NonBlankStr | None = None
-    """``None`` なら ``BedrockAgentCoreApp.run`` に任せる（コンテナ内は 0.0.0.0、それ以外は 127.0.0.1）。"""
+    """``None`` ならコンテナ内は0.0.0.0、それ以外は127.0.0.1。"""
     port: int = Field(default=8080, ge=1, le=65535)
+    workers: int = Field(default=1, gt=0)
+    """同じホスト内のワーカープロセス数。各ワーカーが独立した実行枠とスレッドプールを持つ。"""
     log_file: NonBlankStr | None = None
     """プロセスのログ（ランタイム・Strands・uvicorn・警告）をこのファイルにも書く。runtime.toml からの相対パス。"""
+    backlog: int = Field(default=2048, gt=0)
+    """OS の TCP 接続受付待ち。エージェントの実行待ちキューとは別。"""
+    http_threads: int = Field(default=64, gt=0)
+    """HTTP 側の同期処理・SSE 転送が使う AnyIO スレッドの上限。"""
+    io_threads: int = Field(default=32, gt=0)
+    """実行ループの asyncio.to_thread / run_in_executor(None, ...) が使うスレッドの上限。"""
+    timeout_keep_alive: int = Field(default=5, ge=0)
+    timeout_graceful_shutdown: int = Field(default=30, gt=0)
+    timeout_worker_healthcheck: int = Field(default=30, gt=0)
+    """ワーカープロセスの死活確認の応答猶予。起動直後のimportにも余裕を持たせる。"""
+
+
+class ExecutionSection(_Strict):
+    """1プロセス内のトップレベル実行の受付制御。run と job で枠を共有する。"""
+
+    max_concurrent: int = Field(default=16, gt=0)
+    max_queued: int = Field(default=64, ge=0)
+    queue_timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    """実行枠を待つ時間の上限（DBアクセス時間を除く）。実行自体の timeout_seconds とは別。"""
 
 
 class JobsSection(_Strict):
     """``runtime.toml`` の ``[jobs]``。ジョブのジャーナルを置く場所と、ジョブ 1 件の上限時間。"""
 
-    storage: Literal["inherit", "local", "s3"] = "inherit"
-    """``inherit`` は ``[session]`` が ``local`` / ``s3`` ならその Storage を使う。
+    storage: Literal["inherit", "local", "s3", "session", "none"] = "inherit"
+    """``inherit`` は ``[session.history]`` の保存先を使う（localは同じディレクトリのSQLite）。
     それ以外（``agentcore_memory`` / ``none``）ではジャーナルを置けないので、明示しない限りジョブは無効になる。"""
     dir: NonBlankStr | None = None
     bucket: NonBlankStr | None = None
@@ -451,9 +523,10 @@ class JobsSection(_Strict):
             raise ValueError("[jobs] storage = 's3' requires 'bucket'")
         return self
 
-    def as_session_spec(self) -> SessionSpec:
-        """``local`` / ``s3`` の Storage は ``[session]`` と同じ作り方なので、同じ構築経路に乗せる。"""
-        return SessionSpec(
+    def as_history_spec(self) -> HistorySpec:
+        """``local`` / ``s3`` の Storage は ``[session.history]`` と同じ作り方なので、同じ構築経路に乗せる。"""
+        assert self.storage in ("local", "s3", "inherit", "none")
+        return HistorySpec(
             backend=self.storage, dir=self.dir, bucket=self.bucket, prefix=self.prefix, region=self.region
         )
 
@@ -463,13 +536,18 @@ class RuntimeConfig(_Strict):
 
     runtime: RuntimeSection = Field(default_factory=RuntimeSection)
     model: ModelDefaults = Field(default_factory=ModelDefaults)
-    session: SessionSpec = Field(default_factory=lambda: SessionSpec(backend="local"))
+    session: SessionSection = Field(default_factory=SessionSection)
     jobs: JobsSection = Field(default_factory=JobsSection)
     server: ServerSection = Field(default_factory=ServerSection)
+    execution: ExecutionSection = Field(default_factory=ExecutionSection)
 
     @model_validator(mode="after")
-    def _session_not_inherit(self) -> RuntimeConfig:
-        # ``inherit`` は agent.toml が runtime.toml を参照するための値なので、参照先である runtime.toml には書けない。
-        if self.session.backend == "inherit":
-            raise ValueError("runtime.toml [session].backend cannot be 'inherit'")
+    def _session_constraints(self) -> RuntimeConfig:
+        if self.session.backend == "agentcore" and self.server.workers != 1:
+            raise ValueError("session.backend = 'agentcore' requires server.workers = 1")
+        external = self.session.backend in ("dynamodb", "cosmos")
+        if self.jobs.storage == "session" and not external:
+            raise ValueError("jobs.storage = 'session' requires a dynamodb or cosmos session backend")
+        if external and self.jobs.storage == "local":
+            raise ValueError("distributed session management cannot use local jobs")
         return self

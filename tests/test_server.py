@@ -96,14 +96,12 @@ def test_log_file_receives_server_logs_and_warnings(tmp_path) -> None:
     assert "hello from the server" in text and "context_window_limit is not set" in text
 
 
-def test_busy_session_is_409(client: TestClient, runtime: Runtime) -> None:
-    runtime.invoker._active_sessions.add("busy-session-000000000000000000000000")
-    try:
-        response = client.post(
-            "/invocations", json={"prompt": "hi", "session_id": "busy-session-000000000000000000000000"}
-        )
-    finally:
-        runtime.invoker._active_sessions.discard("busy-session-000000000000000000000000")
+def test_busy_session_is_409(client: TestClient, runtime: Runtime, monkeypatch) -> None:
+    async def busy(session_id):
+        return True
+
+    monkeypatch.setattr(runtime.invoker, "busy_check", busy)
+    response = client.post("/invocations", json={"prompt": "hi", "session_id": "busy-session-000000000000000000000000"})
     assert response.status_code == 409
     assert "in progress" in response.json()["error"]
 

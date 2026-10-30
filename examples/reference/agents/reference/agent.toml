@@ -88,9 +88,9 @@ inject = [                                             # 各ユーザーター�
 ]
 timezone = "Asia/Tokyo"                                # datetime 注入のタイムゾーン（IANA 名、既定 UTC）
 
-[session]
-backend = "inherit"                                    # inherit（既定。runtime.toml の [session] を使う）| local | s3 | agentcore_memory | none
-# 上書きするときのキーは runtime.toml の [session] と同じ（dir / bucket / prefix / region / memory_id / retrieval）。
+[session.history]
+backend = "inherit"                                    # inherit（既定。runtime.toml の [session.history] を使う）| local | s3 | dynamodb | cosmos | agentcore_memory | none
+# 上書きするときのキーは runtime.toml の [session.history] と同じ（dir / bucket / prefix / region / memory_id / retrieval）。
 
 [structured_output]
 model = "./schemas.py:Answer"                          # pydantic モデルへのコード参照。result.structured_output に入り、stop_reason は "structured_output"

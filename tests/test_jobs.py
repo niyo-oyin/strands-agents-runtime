@@ -16,7 +16,7 @@ from strands_runtime.errors import JobsDisabledError, SessionBusyError, UnknownJ
 from strands_runtime.invoke import InvocationRequest
 from strands_runtime.jobs import JobJournal, JobRecord
 from strands_runtime.jobs import manager as manager_module
-from strands_runtime.runtime import Runtime
+from strands_runtime.runtime import Runtime, _job_journal
 from strands_runtime_client.events import ErrorEvent, JobEvent, ResultEvent, TextEvent, ToolResultEvent, ToolUseEvent
 from tests import fakes
 from tests.conftest import write_agent, write_runtime
@@ -31,9 +31,9 @@ async def follow_all(runtime: Runtime, session_id: str, job_id: str | None = Non
 
 
 def journal_of(runtime: Runtime) -> JobJournal:
-    storage = runtime.factory.sessions.storage_for(runtime.config.session)
-    assert storage is not None
-    return JobJournal(storage)
+    journal = _job_journal(runtime.config, runtime.factory, runtime.base_dir)
+    assert journal is not None
+    return journal
 
 
 def stale_record(session_id: str, *, minutes_ago: int = 10) -> JobRecord:
@@ -145,8 +145,8 @@ async def test_job_running_elsewhere_blocks_the_session_too(runtime: Runtime) ->
     with pytest.raises(SessionBusyError):
         await anext(runtime.invoker.stream(InvocationRequest(prompt="hi", session_id="job-remote")))
     assert (await runtime.jobs.cancel("job-remote")).state == "cancelling"
-    stored = await journal.read_record("job-remote", record.job_id)
-    assert stored is not None and stored.cancel_requested_at and stored.cancelled_by == "client"
+    stored = await journal.read_cancellation("job-remote", record.job_id)
+    assert stored is not None and stored.requested_at and stored.by == "client"
 
 
 async def test_cancel_request_from_another_process_is_picked_up_by_the_heartbeat(
@@ -160,11 +160,10 @@ async def test_cancel_request_from_another_process_is_picked_up_by_the_heartbeat
         journal = journal_of(runtime)
         stored = await journal.read_record("job-hb", job.job_id)
         assert stored is not None
-        # 別プロセスの cancel と同じ内容をジャーナルに書く。
-        stored.cancel_requested_at = stored.updated_at
-        stored.cancelled_by = "runtime"
-        stored.state = "cancelling"
-        await journal.write_record(stored)
+        # 別ワーカーと同じく、所有者のメモリ状態を持たないRuntimeから停止する。
+        observer = Runtime.load(runtime.config_path)
+        assert (await observer.jobs.cancel("job-hb", job.job_id, by="runtime")).state == "cancelling"
+        await journal.write_record(stored)  # 古い実行記録の更新でも停止要求を消さない。
         final = (await follow_all(runtime, "job-hb", job.job_id))[-1]
     finally:
         fakes.set_chunk_delay(0.0)
@@ -184,6 +183,9 @@ async def test_lost_job_is_failed_when_observed(runtime: Runtime) -> None:
     result = await runtime.jobs.result("job-lost")
     assert isinstance(result, ErrorEvent) and result.error_type == "JobLost" and result.seq == 2
     assert [e.type for e in await follow_all(runtime, "job-lost", after=1)] == ["error"]  # type: ignore[attr-defined]
+    # 観測側が、遅延している所有ワーカーの記録を上書きしない。
+    stored = await journal.read_record("job-lost", record.job_id)
+    assert stored is not None and stored.state == "running" and stored.seq == 1
     # 新しい実行は受け付けられる。
     fakes.script(fakes.text("fresh"))
     assert isinstance(await runtime.invoker.invoke(InvocationRequest(prompt="go", session_id="job-lost")), ResultEvent)
@@ -286,7 +288,10 @@ async def test_job_journal_on_s3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         prefix = f"p/{uuid.uuid4()}/"
         write_agent(tmp_path / "agents", "s3agent")
         runtime = Runtime.load(
-            write_runtime(tmp_path, f'[session]\nbackend = "s3"\nbucket = "job-bucket"\nprefix = "{prefix}"')
+            write_runtime(
+                tmp_path,
+                f'[session]\nbackend = "local"\n[session.history]\nbackend = "s3"\nbucket = "job-bucket"\nprefix = "{prefix}"',
+            )
         )
         fakes.script(fakes.text("on s3"))
         job = await submit(runtime, agent="s3agent", session_id="job-s3")

@@ -9,12 +9,27 @@ default_id = "bedrock/global.anthropic.claude-opus-5"
 
 [session]
 backend = "local"
+
+[session.history]
+backend = "local"
 dir = "./.runtime/sessions"
 
-# [jobs]                              # ジョブ（mode = "job"）のジャーナル。省略時は [session] の local / s3 を使う
-# storage = "inherit"                 # inherit | local | s3
+# [jobs]                              # ジョブ（mode = "job"）のジャーナル。省略時は [session.history] のlocal / S3 / NoSQLを使う
+# storage = "inherit"                 # inherit | local | s3 | session | none
 # max_duration_seconds = 28800        # ジョブ 1 件の上限（既定 8 時間）
 
+[execution]
+max_concurrent = 16                  # 1プロセス内の実行上限。通常実行とジョブで共有
+max_queued = 64                      # 実行枠を待つリクエスト数。0なら満杯時に即503
+queue_timeout_seconds = 30           # 待機の上限。実行時間の上限とは別
+
 [server]
+workers = 1                         # ワーカープロセス数。実行・待機・スレッド上限は各ワーカーに適用
 port = 18080
 log_file = "./.runtime/server.log"   # 端末に加えてファイルにも出す
+backlog = 2048                      # TCPの接続受付待ち。実行待ちキューとは別
+http_threads = 64                    # HTTP同期処理・SSE転送のスレッド上限
+io_threads = 32                      # 同期ツール・S3 I/Oなどのスレッド上限
+timeout_keep_alive = 5
+timeout_graceful_shutdown = 30
+timeout_worker_healthcheck = 30

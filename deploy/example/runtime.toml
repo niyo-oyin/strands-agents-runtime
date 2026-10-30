@@ -9,9 +9,13 @@ default_agent = "assistant"
 default_id = "bedrock/global.anthropic.claude-opus-5"
 
 [session]
+backend = "agentcore"
+
+[session.history]
 backend = "s3"
 bucket = "${SESSION_BUCKET}"              # CDK スタックが作成し環境変数で渡す
 prefix = "sessions/"
 
 [server]
+workers = 1
 port = 8080

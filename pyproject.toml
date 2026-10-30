@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
+    "anyio>=4,<5",
+    "psutil>=7.2.2,<8",
+    "uvicorn>=0.54,<1",
     "strands-agents-runtime-client==0.1.0",
     "strands-agents[otel]>=1.61,<2",
     "strands-harness>=0.3.1,<0.4",
@@ -27,6 +30,7 @@ ollama = ["strands-agents[ollama]"]
 litellm = ["strands-agents[litellm]"]
 a2a = ["strands-agents[a2a]"]
 cedar = ["strands-agents[cedar]"]
+cosmos = ["azure-cosmos>=4.17.1,<5", "azure-core>=1.38,<2", "azure-identity>=1.25.1,<2"]
 agentcore-otel = ["aws-opentelemetry-distro>=0.18,<1"]
 
 [project.scripts]
@@ -95,7 +99,7 @@ mypy_path = ["src", "packages/client/src"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["strands_harness.*", "bedrock_agentcore.*", "botocore.*"]
+module = ["strands_harness.*", "bedrock_agentcore.*", "botocore.*", "psutil", "azure.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

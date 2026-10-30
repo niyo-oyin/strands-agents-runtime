@@ -10,7 +10,7 @@ description = "helper が受け付け、必要なら reference に引き継ぐ"
 nodes = ["helper", "reference"]             # [[nodes]] テーブル（id / agent）でも書ける
 entry = "helper"                            # 省略時は先頭
 
-[session]
+[session.history]
 backend = "inherit"
 
 [limits]

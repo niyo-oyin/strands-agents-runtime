@@ -39,7 +39,11 @@ effort = "low"
 context_window_limit = 32000
 """,
     )
-    runtime = Runtime.load(write_runtime(tmp_path, 'default_agent = "azure"\n[session]\nbackend = "local"'))
+    runtime = Runtime.load(
+        write_runtime(
+            tmp_path, 'default_agent = "azure"\n[session]\nbackend = "local"\n[session.history]\nbackend = "local"'
+        )
+    )
     request = InvocationRequest(
         messages=[
             Message(role="user", content="earlier"),

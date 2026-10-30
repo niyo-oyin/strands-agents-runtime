@@ -6,6 +6,9 @@ default_agent = "coordinator"
 
 [session]
 backend = "local"
+
+[session.history]
+backend = "local"
 dir = "./.sessions"
 
 [server]

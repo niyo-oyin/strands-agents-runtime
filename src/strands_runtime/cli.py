@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="start the HTTP server (AgentCore contract)")
     serve.add_argument("--host")
     serve.add_argument("--port", type=int)
+    reservation = sub.add_parser(
+        "reservation", help="inspect or release an external session reservation after stopping its owner"
+    )
+    reservation.add_argument("session_id")
+    reservation.add_argument("--release-owner", help="release only if the reservation still has this exact owner token")
     return parser
 
 
@@ -61,9 +66,23 @@ def main(argv: list[str] | None = None) -> int:
                 return asyncio.run(_run(runtime, args))
             case "serve":
                 return _serve(runtime, args)
+            case "reservation":
+                return asyncio.run(_reservation(runtime, args))
     except StrandsRuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    return 0
+
+
+async def _reservation(runtime: Runtime, args: argparse.Namespace) -> int:
+    if runtime.shared_store is None:
+        print("error: reservation management requires session.backend = dynamodb or cosmos", file=sys.stderr)
+        return 1
+    if args.release_owner:
+        released = await runtime.shared_store.recover(args.session_id, args.release_owner)
+        print(json.dumps({"released": released}))
+        return 0 if released else 1
+    print(json.dumps(await runtime.shared_store.inspect(args.session_id), ensure_ascii=False))
     return 0
 
 
@@ -192,16 +211,15 @@ async def _run(runtime: Runtime, args: argparse.Namespace) -> int:
 
 
 def _serve(runtime: Runtime, args: argparse.Namespace) -> int:
-    from strands_runtime.server import create_app, run_app
+    from strands_runtime.server import run_app
 
     port = args.port or runtime.config.server.port
-    # 表示用の host は BedrockAgentCoreApp.run と同じ規則で決める（コンテナ内は 0.0.0.0、それ以外は 127.0.0.1）。
-    # 実際のバインド先の決定は app.run に任せるので、ここで決めた値は渡さない。
+    # コンテナ内は 0.0.0.0、それ以外は 127.0.0.1。
     in_container = Path("/.dockerenv").exists() or bool(os.environ.get("DOCKER_CONTAINER"))
     host = args.host or runtime.config.server.host or ("0.0.0.0" if in_container else "127.0.0.1")
     print(f"strands-runtime: serving {', '.join(runtime.registry.published)} at http://{host}:{port}", flush=True)
     print("  POST /invocations  GET /ping   (Ctrl-C to stop)", flush=True)
-    run_app(create_app(runtime), runtime, port=port, host=args.host, verbose=args.verbose)
+    run_app(runtime, port=port, host=host, verbose=args.verbose)
     return 0
 
 

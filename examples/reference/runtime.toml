@@ -20,9 +20,26 @@ max_subagent_depth = 3                   # 入れ子の深さの上限（1〜10�
 default_id = "bedrock/global.anthropic.claude-opus-5"
 
 [session]
-# 会話履歴（短期記憶）の保存先。agent.toml の [session] backend = "inherit"（既定）がこれを使う。
+# 実行中・待機中の同一セッションを409にする。配置場所を示すenvironment設定はない。
+backend = "local"                        # none（既定）| local | dynamodb | cosmos | agentcore
+namespace = "default"                    # 外部DBでサービスを区別。全インスタンスで揃える
+sqlite_path = "./.runtime/execution.sqlite3" # local用。同じホストのローカルディスクに置く
+# agentcoreはworkers=1とAgentCoreのセッションヘッダーが必須。Memoryは自動で有効にならない。
+# noneのときは履歴もnone。dynamodb/cosmosのときは履歴・ジョブにlocalを指定できない。
+# 外部DBを選ぶ場合は、選んだbackendの接続設定だけを追加する:
+# [session.dynamodb]
+# table = "agent-runtime-sessions"
+# region = "ap-northeast-1"
+# [session.cosmos]
+# endpoint = "https://your-account.documents.azure.com:443/"
+# database = "agents"
+# container = "sessions"
+# key = "${COSMOS_KEY}"                  # 省略時はDefaultAzureCredential
+
+[session.history]
+# 会話履歴（短期記憶）の保存先。agent.toml の [session.history] backend = "inherit"（既定）がこれを使う。
 # runtime.toml では "inherit" は書けない。
-backend = "local"                        # local | s3 | agentcore_memory | none
+backend = "local"                        # none（既定）| local | s3 | dynamodb | cosmos | agentcore_memory
 dir = "./.runtime/sessions"              # local のとき。省略時は ./.runtime/sessions
 
 # backend = "s3"
@@ -30,10 +47,17 @@ dir = "./.runtime/sessions"              # local のとき。省略時は ./.run
 # prefix = "prod/"                       # 省略可。キーの先頭に付ける
 # region = "ap-northeast-1"              # 省略時は boto3 の既定
 
+# backend = "dynamodb"                  # 大きなスナップショットはチャンクに分割して保存
+# namespace = "default"
+# [session.history.dynamodb]
+# table = "agent-runtime-history"
+# region = "ap-northeast-1"
+# backend = "cosmos"                    # 接続先は[session.history.cosmos]に指定。キーはsession.cosmosと同じ
+
 # backend = "agentcore_memory"           # AgentCore Memory（短期記憶 + 戦略による長期記憶）。actor_id が名前空間になる
 # memory_id = "${AGENTCORE_MEMORY_ID}"   # 必須
 # region = "us-east-1"
-# [session.retrieval."/preferences/{actorId}/"]   # 名前空間ごとの長期記憶の取り込み（省略可）
+# [session.history.retrieval."/preferences/{actorId}/"]   # 名前空間ごとの長期記憶の取り込み（省略可）
 # top_k = 5                              # 取り込む件数（1〜1000、既定 10）
 # relevance_score = 0.7                  # 関連度の下限（0〜1、既定 0.2）
 # strategy_id = "pref-strategy"          # 戦略 ID（省略可）
@@ -42,18 +66,30 @@ dir = "./.runtime/sessions"              # local のとき。省略時は ./.run
 
 [jobs]
 # mode = "job" の実行（リクエストを超えて生きる実行）の進捗と結果を書くジャーナル。
-storage = "inherit"                      # inherit | local | s3。inherit は [session] が local / s3 ならその Storage を使う。
-                                         # [session] が agentcore_memory / none のときは、ここで local / s3 を明示しない限りジョブは無効
+storage = "inherit"                      # inherit | local | s3 | session | none。inherit は [session.history] のlocal / s3 / dynamodb / cosmosを使う（localはSQLite）。
+                                         # [session.history] が agentcore_memory / none のときは、ここで保存先を明示しない限りジョブは無効
 # dir = "./.runtime/jobs"                # storage = "local" のとき
 # bucket = "${JOBS_BUCKET}"              # storage = "s3" のとき必須
 # prefix = ""
 # region = "ap-northeast-1"
 max_duration_seconds = 28800             # ジョブ 1 件の上限（秒）。エージェントの [limits] timeout_seconds が短ければそちらが効く
 
+[execution]
+max_concurrent = 16                     # 1プロセスのトップレベル実行数。run / job で共有。サブエージェントは別枠を取らない
+max_queued = 64                         # 実行枠の待機リクエスト数。0なら待たずに503
+queue_timeout_seconds = 30              # 実行開始前の待機上限。超過は503。同じセッションは待機中も409
+
 [server]
+workers = 1                             # Windows / Linux のワーカープロセス数。各ワーカーに実行・待機枠を持つ
 # host = "0.0.0.0"                       # 省略時: コンテナ内なら 0.0.0.0、それ以外は 127.0.0.1
 port = 8080                              # AgentCore はコンテナ側の 8080 を前提にする
 log_file = "./.runtime/server.log"       # 省略可。標準エラー出力に加えてファイルにも出す（警告を含む）
+backlog = 2048                          # OSのTCP接続受付待ち。実行待ちキューとは別
+http_threads = 64                       # HTTP同期処理・SSE転送のAnyIOスレッド上限
+io_threads = 32                         # 実行ループのasyncio既定executor。同期ツール・S3 I/Oなど
+timeout_keep_alive = 5                  # HTTP keep-aliveのアイドル上限（秒）
+timeout_graceful_shutdown = 30          # UvicornのHTTP終了待ち猶予（秒）。ジョブ停止の猶予とは別
+timeout_worker_healthcheck = 30         # 親プロセスが子ワーカーの応答を待つ秒数
 
 # [telemetry]
 # トレースの送信先は OpenTelemetry 標準の環境変数（OTEL_TRACES_EXPORTER、OTEL_EXPORTER_OTLP_ENDPOINT など）で

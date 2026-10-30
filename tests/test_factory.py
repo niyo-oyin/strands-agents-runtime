@@ -31,7 +31,7 @@ def test_build_wires_prompt_tools_model_config_and_session(project: Path) -> Non
 
 def test_subagents_become_tools_and_session_none_disables_persistence(tmp_path: Path) -> None:
     agents = tmp_path / "agents"
-    write_agent(agents, "parent", toml_extra='subagents = ["helper"]\n[session]\nbackend = "none"\n')
+    write_agent(agents, "parent", toml_extra='subagents = ["helper"]\n[session.history]\nbackend = "none"\n')
     write_agent(agents, "helper")
     runtime = Runtime.load(write_runtime(tmp_path))
 

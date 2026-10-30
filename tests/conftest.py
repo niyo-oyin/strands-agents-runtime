@@ -51,6 +51,10 @@ def write_agent(
 
 
 def write_runtime(base_dir: Path, body: str = "") -> Path:
+    if "[session]" not in body:
+        body += '\n[session]\nbackend = "local"'
+        if "[session.history]" not in body:
+            body += '\n[session.history]\nbackend = "local"'
     path = base_dir / "runtime.toml"
     path.write_text(
         textwrap.dedent(
@@ -69,7 +73,10 @@ def write_runtime(base_dir: Path, body: str = "") -> Path:
 def project(tmp_path: Path) -> Path:
     """偽モデルを使うエージェント ``echoer`` を 1 つ持つプロジェクトディレクトリ。"""
     write_agent(tmp_path / "agents", "echoer")
-    write_runtime(tmp_path, 'default_agent = "echoer"\n[session]\nbackend = "local"\ndir = "./sessions"')
+    write_runtime(
+        tmp_path,
+        'default_agent = "echoer"\n[session]\nbackend = "local"\n[session.history]\nbackend = "local"\ndir = "./sessions"',
+    )
     return tmp_path
 
 
